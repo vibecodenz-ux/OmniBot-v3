@@ -61,6 +61,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html,
 body,
 #root {
@@ -258,6 +262,18 @@ button {
   color: var(--text-muted);
 }
 
+.sidebar-build {
+  display: grid;
+  gap: 0.12rem;
+  margin-top: 0.3rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(128, 151, 188, 0.12);
+}
+
+.sidebar-build strong {
+  font-size: 0.95rem;
+}
+
 .sidebar-link-logout {
   margin-top: 0.15rem;
   color: #ffc4c4;
@@ -334,6 +350,17 @@ button {
 
 .panel-body {
   padding: 0.88rem 0.92rem 0.96rem;
+}
+
+.panel-body-scrollable {
+  max-height: min(34rem, 70vh);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+.panel-span-full {
+  grid-column: 1 / -1;
 }
 
 .primary-button,
@@ -531,6 +558,10 @@ button {
   gap: 1rem;
 }
 
+.analytics-signals-panel .series-grid {
+  gap: 1.15rem;
+}
+
 .series-card {
   display: grid;
   gap: 0.8rem;
@@ -544,6 +575,24 @@ button {
 .series-chart-block {
   display: grid;
   gap: 0.55rem;
+}
+
+.chart-overlay-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.chart-overlay-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.73rem;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(128, 151, 188, 0.16);
+  background: rgba(128, 151, 188, 0.08);
 }
 
 .series-chart-header,
@@ -606,14 +655,51 @@ button {
   background: linear-gradient(180deg, rgba(87, 123, 255, 0.1), rgba(9, 15, 26, 0.72));
 }
 
+.analytics-signals-panel .candlestick-shell {
+  padding: 0.95rem 1rem;
+}
+
+.candlestick-host {
+  width: 100%;
+  height: 15rem;
+}
+
+.analytics-signals-panel .candlestick-host {
+  height: 18.5rem;
+}
+
 .sparkline-svg {
   width: 100%;
   height: 7rem;
   overflow: visible;
 }
 
-.candlestick-svg {
-  border-radius: 0.8rem;
+.chart-overlay-entry {
+  color: #f5cf5c;
+  border-color: rgba(245, 207, 92, 0.18);
+  background: rgba(245, 207, 92, 0.08);
+}
+
+.chart-overlay-target {
+  color: #6fe3b4;
+  border-color: rgba(111, 227, 180, 0.2);
+  background: rgba(111, 227, 180, 0.08);
+}
+
+.chart-attribution {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.chart-attribution a {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.chart-attribution a:hover {
+  color: var(--text-soft);
+  text-decoration: underline;
 }
 
 .sparkline-path {
@@ -623,25 +709,6 @@ button {
   stroke-linecap: round;
   stroke-linejoin: round;
   filter: drop-shadow(0 0 10px rgba(95, 134, 255, 0.32));
-}
-
-.candle-wick {
-  stroke: rgba(232, 239, 255, 0.92);
-  stroke-width: 0.8;
-}
-
-.candle-body {
-  stroke-width: 0.45;
-}
-
-.candle-up .candle-body {
-  fill: rgba(43, 194, 120, 0.92);
-  stroke: rgba(43, 194, 120, 1);
-}
-
-.candle-down .candle-body {
-  fill: rgba(255, 122, 122, 0.92);
-  stroke: rgba(255, 122, 122, 1);
 }
 
 .sparkline-meta span,
@@ -661,6 +728,15 @@ button {
 .ranking-list {
   display: grid;
   gap: 0.55rem;
+}
+
+.analytics-decisions-panel .feed-list {
+  gap: 0.75rem;
+}
+
+.analytics-toggle-button {
+  min-width: 6.5rem;
+  justify-content: center;
 }
 
 .ranking-row {
@@ -1121,6 +1197,43 @@ button {
   flex-wrap: wrap;
 }
 
+.settings-update-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.settings-update-card {
+  min-width: 0;
+}
+
+.settings-update-meta {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.settings-update-history {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.settings-update-history-card {
+  min-width: 0;
+}
+
+.settings-update-status {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.settings-update-status span {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
 .settings-feedback {
   margin: 0;
   font-size: 0.84rem;
@@ -1309,6 +1422,8 @@ th {
   .module-list-bots,
   .module-list,
   .settings-broker-grid,
+  .settings-update-card-grid,
+  .settings-update-history,
   .settings-form-grid {
     grid-template-columns: 1fr;
   }

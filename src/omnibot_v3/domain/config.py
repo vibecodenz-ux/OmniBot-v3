@@ -87,6 +87,8 @@ class AppConfig:
     secrets_directory: str = "secrets"
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8000
+    update_repo: str = "vibecodenz-ux/OmniBot-v3"
+    update_branch: str = "main"
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +255,8 @@ def load_config(
     secrets_directory = env.get("OMNIBOT_SECRETS_DIR", "secrets")
     dashboard_host = env.get("OMNIBOT_BIND_HOST", "127.0.0.1")
     dashboard_port = _parse_int(env.get("OMNIBOT_PORT", ""), 8000)
+    update_repo = env.get("OMNIBOT_UPDATE_REPO", "vibecodenz-ux/OmniBot-v3")
+    update_branch = env.get("OMNIBOT_UPDATE_BRANCH", "main")
 
     return AppConfig(
         environment=environment,
@@ -266,4 +270,6 @@ def load_config(
         secrets_directory=secrets_directory,
         dashboard_host=dashboard_host,
         dashboard_port=dashboard_port,
+        update_repo=update_repo,
+        update_branch=update_branch,
     )

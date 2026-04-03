@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""OmniBot v3 local bootstrap script."""
+"""
+OmniBot v3 local developer bootstrap script.
+
+Usage:
+    python scripts/bootstrap.py [--extras EXTRAS] [--skip-venv] [--skip-tool-preflight]
+
+This script:
+1. Checks the Python version meets the minimum requirement.
+2. Creates a virtual environment at .venv/ (unless --skip-venv is given).
+3. Installs the project with the requested extras (default: dev,postgres).
+4. Runs a quick preflight to confirm the package is importable, and optionally that dev tooling is importable.
+
+Run this script from the repository root.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +24,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent.resolve()
 VENV_DIR = REPO_ROOT / ".venv"
 MIN_PYTHON = (3, 11)
-DEFAULT_EXTRAS = "api"
+DEFAULT_EXTRAS = "dev,postgres"
+
+# Tools that must be importable after installation.
+REQUIRED_TOOLS = [
+    ("ruff", "ruff"),
+    ("mypy", "mypy"),
+    ("pytest", "pytest"),
+]
 
 
 def _fail(msg: str) -> None:
@@ -69,9 +89,28 @@ def _install(extras: str, skip_venv: bool) -> None:
     _info("Installation complete.")
 
 
-def _preflight(skip_venv: bool) -> None:
+def _preflight(skip_venv: bool, *, skip_tool_preflight: bool) -> None:
     python = sys.executable if skip_venv else str(_venv_python())
     _info("Running preflight checks …")
+    if skip_tool_preflight:
+        _info("  tooling import checks skipped")
+    else:
+        ok = True
+        for module, label in REQUIRED_TOOLS:
+            result = subprocess.run(
+                [python, "-c", f"import {module}; print({module}.__version__)"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                version = result.stdout.strip()
+                _info(f"  {label} {version} — OK")
+            else:
+                print(f"[bootstrap] WARN: could not import '{module}'", file=sys.stderr)
+                ok = False
+
+        if not ok:
+            _fail("One or more required tools are missing. Check the output above.")
 
     # Verify the package itself is importable.
     result = subprocess.run(
@@ -88,7 +127,7 @@ def _preflight(skip_venv: bool) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="OmniBot v3 bootstrap")
+    parser = argparse.ArgumentParser(description="OmniBot v3 developer bootstrap")
     parser.add_argument(
         "--extras",
         default=DEFAULT_EXTRAS,
@@ -99,12 +138,17 @@ def main() -> None:
         action="store_true",
         help="Skip venv creation and use the current interpreter",
     )
+    parser.add_argument(
+        "--skip-tool-preflight",
+        action="store_true",
+        help="Skip ruff, mypy, and pytest import checks and only verify the package import",
+    )
     args = parser.parse_args()
 
     _check_python_version()
     _create_venv(args.skip_venv)
     _install(args.extras, args.skip_venv)
-    _preflight(args.skip_venv)
+    _preflight(args.skip_venv, skip_tool_preflight=args.skip_tool_preflight)
 
     _info("")
     _info("Bootstrap complete. Activate your virtual environment:")

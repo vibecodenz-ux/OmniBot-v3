@@ -1,3 +1,12 @@
+function formatLocalClock(date: Date): string {
+  const hours24 = date.getHours();
+  const minutes = date.getMinutes();
+  const period = hours24 >= 12 ? "pm" : "am";
+  const hours12 = hours24 % 12 || 12;
+
+  return `${hours12}:${String(minutes).padStart(2, "0")}${period}`;
+}
+
 export function formatMoney(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === "") {
     return "-";
@@ -26,6 +35,19 @@ export function formatTimestamp(value: string | null | undefined): string {
   }
 
   return date.toLocaleString();
+}
+
+export function formatChartTime(value: string | null | undefined): string {
+  if (!value) {
+    return "-";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return formatLocalClock(date);
 }
 
 export function formatNzTime(value: string | null | undefined): string {

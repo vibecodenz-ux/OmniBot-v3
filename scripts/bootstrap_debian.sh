@@ -73,7 +73,7 @@ if [[ ! -f "$REPO_ROOT/.env" && -f "$REPO_ROOT/.env.example" ]]; then
 fi
 
 info "creating the local virtual environment and installing .[$EXTRAS]"
-python3 "$REPO_ROOT/scripts/bootstrap.py" --extras "$EXTRAS"
+python3 "$REPO_ROOT/scripts/bootstrap.py" --extras "$EXTRAS" --skip-tool-preflight
 
 info "initializing runtime directories"
 "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/scripts/init_runtime_permissions.py" --root-dir "$REPO_ROOT" >/dev/null
@@ -124,7 +124,7 @@ done
 
 bind_host="$(grep '^OMNIBOT_BIND_HOST=' "$REPO_ROOT/.env" | tail -n 1 | cut -d '=' -f 2- || true)"
 port="$(grep '^OMNIBOT_PORT=' "$REPO_ROOT/.env" | tail -n 1 | cut -d '=' -f 2- || true)"
-bind_host="${bind_host:-0.0.0.0}"
+bind_host="${bind_host:-127.0.0.1}"
 port="${port:-8000}"
 
 if [[ "$bind_host" == "0.0.0.0" ]]; then

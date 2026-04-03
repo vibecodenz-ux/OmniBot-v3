@@ -38,15 +38,6 @@ info "ensuring React dashboard build is current"
 HOST="${OMNIBOT_BIND_HOST:-127.0.0.1}"
 PORT="${OMNIBOT_PORT:-8000}"
 
-if [[ "$HOST" == "0.0.0.0" ]]; then
-  info "local URL: http://127.0.0.1:$PORT/"
-  addresses="$(hostname -I 2>/dev/null || true)"
-  first_address="$(printf '%s\n' "$addresses" | awk '{print $1}')"
-  if [[ -n "$first_address" ]]; then
-    info "network URL: http://$first_address:$PORT/"
-  fi
-else
-  info "dashboard URL: http://$HOST:$PORT/"
-fi
+info "starting OmniBot dashboard on http://$HOST:$PORT/"
 info "press Ctrl+C to stop"
 exec "$VENV_PYTHON" -m uvicorn omnibot_v3.api.app:create_app --factory --host "$HOST" --port "$PORT"

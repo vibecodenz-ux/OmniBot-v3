@@ -55,7 +55,7 @@ def main() -> int:
         working_directory=Path(args.working_directory),
         python_executable=Path(args.python_executable),
         environment_file=Path(args.environment_file),
-        environment=_parse_env_pairs(args.env),
+        environment=(("OMNIBOT_ENV", "production"),) + _parse_env_pairs(args.env),
     )
     plan = build_systemd_install_plan(config=config, output_directory=output_dir)
 

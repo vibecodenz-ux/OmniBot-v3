@@ -119,6 +119,14 @@ class _RankedSymbol:
     bar_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class _PositionOverlay:
+    symbol: str
+    side: str
+    entry_price: Decimal
+    close_target_price: Decimal | None
+
+
 @dataclass(slots=True)
 class StrategyScannerService:
     orchestrator: TradingOrchestrator
@@ -179,12 +187,12 @@ class StrategyScannerService:
                 scanner_running=True,
                 automation_state="warming-up",
                 warmup_status="pending",
-                last_decision="Scanner started and warmup queued.",
+                last_decision="Scanner started and market data warmup queued.",
                 last_error=None,
             )
             self._record_event_locked(
                 market,
-                message="Scanner started for live strategy evaluation.",
+                message="Scanner started for live market data and strategy evaluation.",
                 event_type="scanner-started",
                 occurred_at=datetime.now(UTC),
             )
@@ -273,16 +281,7 @@ class StrategyScannerService:
         while not stop_event.is_set():
             try:
                 snapshot = self.orchestrator.snapshot(market)
-                if snapshot.state.value == "RUNNING":
-                    self._scan_market(market)
-                else:
-                    self.orchestrator.heartbeat(market)
-                    with self._lock:
-                        self._set_activity_locked(
-                            market,
-                            automation_state="connected-only",
-                            scanner_running=True,
-                        )
+                self._scan_market(market, allow_execution=snapshot.state.value == "RUNNING")
             except Exception as exc:
                 with self._lock:
                     self._set_activity_locked(
@@ -299,27 +298,30 @@ class StrategyScannerService:
             self._threads.pop(market, None)
             self._stop_events.pop(market, None)
 
-    def _scan_market(self, market: Market) -> None:
+    def _scan_market(self, market: Market, *, allow_execution: bool) -> None:
         worker = self.workers[market]
         validation = worker.validate_configuration()
         now = datetime.now(UTC)
+        execution_mode = "scan-and-trade" if allow_execution else "scan-only"
         if not validation.valid:
             self.orchestrator.heartbeat(market)
             with self._lock:
                 self._set_activity_locked(
                     market,
                     automation_state="awaiting-credentials",
+                    execution_mode=execution_mode,
                     scanner_running=True,
                     last_decision="; ".join(validation.errors),
                     last_scan_at=now,
                 )
-                self._record_event_locked(
-                    market,
-                    message=f"Configuration blocked trading: {'; '.join(validation.errors)}",
-                    event_type="validation-error",
-                    occurred_at=now,
-                    level="warning",
-                )
+                if allow_execution:
+                    self._record_event_locked(
+                        market,
+                        message=f"Configuration blocked trading: {'; '.join(validation.errors)}",
+                        event_type="validation-error",
+                        occurred_at=now,
+                        level="warning",
+                    )
             return
 
         market_status = self.market_hours.status_for(market, now)
@@ -331,11 +333,42 @@ class StrategyScannerService:
             with self._lock:
                 self._set_activity_locked(
                     market,
-                    automation_state="actively-scanning",
+                    automation_state="actively-scanning" if allow_execution else "passive-scanning",
+                    execution_mode=execution_mode,
                     warmup_status=resolved_warmup_status,
                     scanner_running=True,
                     last_decision=detail,
                     last_scan_at=now,
+                )
+            return
+
+        if not allow_execution:
+            latest_prices = self._prices_for_symbols(worker, market, tuple(worker.settings.symbols), now)
+            for symbol, price in latest_prices.items():
+                if price <= Decimal("0"):
+                    continue
+                self._record_live_bar(market, symbol, price, now)
+                self._history_for(market, symbol).append(price)
+            ranked_symbols = self._rank_symbols(market, tuple(worker.settings.symbols), latest_prices)
+            resolved_warmup_status = self._resolved_warmup_status(market, worker, fallback=warmup_status)
+            with self._lock:
+                self._rankings[market] = tuple(ranked_symbols[: self.ranking_top_n])
+                self._set_activity_locked(
+                    market,
+                    automation_state="passive-scanning",
+                    execution_mode=execution_mode,
+                    scanner_running=True,
+                    warmup_status=resolved_warmup_status,
+                    warmup_completed_at=now if resolved_warmup_status == "ready" else None,
+                    last_scan_at=now,
+                    last_decision=(
+                        f"Passive market data refresh completed for {len(latest_prices)} symbols."
+                        if latest_prices
+                        else "Passive market data refresh is waiting for broker quotes."
+                    ),
+                    last_error=None,
+                    last_signal_symbol=ranked_symbols[0].symbol if ranked_symbols else None,
+                    last_price=str(ranked_symbols[0].latest_price) if ranked_symbols else None,
                 )
             return
 
@@ -462,7 +495,7 @@ class StrategyScannerService:
             self._record_live_bar(market, symbol, price, observed_at)
             history = self._history_for(market, symbol)
             history.append(price)
-            bars = self._bars_for(market, symbol, limit=12)
+            bars = self._recent_bars_for(market, symbol, limit=12)
             plugin = _RollingSignalPlugin(
                 profile=_strategy_profile(market, strategy_id, profile_id),
                 profile_id=profile_id,
@@ -649,14 +682,17 @@ class StrategyScannerService:
         minimum_bars = 3
         ready_symbols = 0
         populated_symbols = 0
+        stale_threshold = _timeframe_delta(self.bar_timeframe) * 2
         for symbol in worker.settings.symbols:
             bars = list(self._bars_for(market, symbol, limit=self.warmup_bars))
             refresh_key = (market, symbol)
             last_refresh = self._last_history_refresh_at.get(refresh_key)
+            latest_bar = bars[-1] if bars else None
+            history_is_stale = latest_bar is None or latest_bar.closed_at < observed_at - stale_threshold
             should_refresh = (
                 callable(adapter_fetch)
                 and (last_refresh is None or observed_at - last_refresh >= timedelta(seconds=self.history_refresh_interval_seconds))
-                and len(bars) < self.warmup_bars
+                and (len(bars) < self.warmup_bars or history_is_stale)
             )
             if should_refresh:
                 fetch_historical_bars = cast(Callable[..., object], adapter_fetch)
@@ -750,6 +786,30 @@ class StrategyScannerService:
             return ()
         return self.historical_bar_store.load(market, symbol, self.bar_timeframe, limit=limit)
 
+    def _recent_contiguous_bars(
+        self,
+        bars: tuple[HistoricalBar, ...],
+    ) -> tuple[HistoricalBar, ...]:
+        if len(bars) < 2:
+            return bars
+
+        max_gap = _timeframe_delta(self.bar_timeframe) * 2
+        start_index = len(bars) - 1
+        for index in range(len(bars) - 1, 0, -1):
+            if bars[index].opened_at - bars[index - 1].opened_at > max_gap:
+                break
+            start_index = index - 1
+        return bars[start_index:]
+
+    def _recent_bars_for(
+        self,
+        market: Market,
+        symbol: str,
+        *,
+        limit: int,
+    ) -> tuple[HistoricalBar, ...]:
+        return self._recent_contiguous_bars(self._bars_for(market, symbol, limit=limit))
+
     def _hydrate_price_history_from_bars(
         self,
         market: Market,
@@ -776,7 +836,7 @@ class StrategyScannerService:
             price = latest_prices.get(symbol)
             if price is None or price <= Decimal("0"):
                 continue
-            bars = self._bars_for(market, symbol, limit=12)
+            bars = self._recent_bars_for(market, symbol, limit=12)
             recent_prices = [bar.close_price for bar in bars] if bars else list(self._history_for(market, symbol))
             if recent_prices and recent_prices[-1] != price:
                 recent_prices = recent_prices[-11:] + [price]
@@ -829,9 +889,12 @@ class StrategyScannerService:
     ) -> dict[str, object]:
         worker = self.workers.get(market)
         worker_symbols = tuple(worker.settings.symbols) if worker is not None else ()
+        strategy_id, profile_id = self.selection_provider(market)
+        strategy_id = normalize_strategy_id(market, strategy_id)
+        profile_id = normalize_profile_id(market, profile_id)
         series = []
         for ranked in rankings[: min(3, self.ranking_top_n)]:
-            bars = self._bars_for(market, ranked.symbol, limit=16)
+            bars = self._recent_bars_for(market, ranked.symbol, limit=16)
             if bars:
                 points = [
                     {
@@ -854,8 +917,9 @@ class StrategyScannerService:
                 }
             )
         candles_by_symbol: dict[str, list[dict[str, object]]] = {}
+        position_overlays_by_symbol = self._position_overlays_payload(market, worker_symbols, strategy_id, profile_id)
         for symbol in worker_symbols:
-            bars = self._bars_for(market, symbol, limit=24)
+            bars = self._recent_bars_for(market, symbol, limit=24)
             if not bars:
                 continue
             candles_by_symbol[symbol] = [
@@ -891,8 +955,86 @@ class StrategyScannerService:
             ],
             "series": series,
             "candles_by_symbol": candles_by_symbol,
+            "position_overlays_by_symbol": position_overlays_by_symbol,
             "candle_timeframe": self.bar_timeframe.value,
         }
+
+    def _position_overlays_payload(
+        self,
+        market: Market,
+        symbols: tuple[str, ...],
+        strategy_id: str,
+        profile_id: str,
+    ) -> dict[str, list[dict[str, object]]]:
+        snapshot = self.portfolio_store.load_all().get(market)
+        if snapshot is None:
+            return {}
+
+        symbol_filter = {symbol.upper() for symbol in symbols}
+        overlays: dict[str, list[dict[str, object]]] = {}
+        for position in snapshot.positions:
+            if position.symbol.upper() not in symbol_filter:
+                continue
+            overlay = self._position_overlay(market, position, strategy_id, profile_id)
+            overlays.setdefault(position.symbol, []).append(
+                {
+                    "side": overlay.side,
+                    "entry_price": str(overlay.entry_price),
+                    "close_target_price": str(overlay.close_target_price) if overlay.close_target_price is not None else None,
+                }
+            )
+        return overlays
+
+    def _position_overlay(
+        self,
+        market: Market,
+        position: NormalizedPosition,
+        strategy_id: str,
+        profile_id: str,
+    ) -> _PositionOverlay:
+        return _PositionOverlay(
+            symbol=position.symbol,
+            side="buy" if position.quantity >= 0 else "sell",
+            entry_price=position.average_price,
+            close_target_price=self._planned_exit_price(market, position, strategy_id, profile_id),
+        )
+
+    def _planned_exit_price(
+        self,
+        market: Market,
+        position: NormalizedPosition,
+        strategy_id: str,
+        profile_id: str,
+    ) -> Decimal | None:
+        recent_bars = self._recent_bars_for(market, position.symbol, limit=12)
+        recent_prices = tuple(self._history_for(market, position.symbol))
+        if len(recent_bars) < 3 and len(recent_prices) < 3:
+            return None
+
+        plugin = _RollingSignalPlugin(
+            profile=_strategy_profile(market, strategy_id, profile_id),
+            profile_id=profile_id,
+            symbol=position.symbol,
+            recent_prices=recent_prices,
+            recent_bars=recent_bars,
+            quantity=abs(position.quantity),
+            allow_short=market in {Market.CRYPTO, Market.FOREX},
+        )
+        return plugin.planned_exit_price(
+            StrategyContext(
+                market=market,
+                account=NormalizedAccount(
+                    account_id=f"overlay-{market.value}",
+                    currency="USD",
+                    equity=Decimal("0"),
+                    buying_power=Decimal("0"),
+                    cash=Decimal("0"),
+                ),
+                positions=(position,),
+                latest_price=position.market_price,
+                bar_timestamp=datetime.now(UTC),
+            )
+        )
 
     def _set_activity_locked(self, market: Market, **changes: object) -> None:
         current = self._activities[market]
@@ -1085,6 +1227,22 @@ class _RollingSignalPlugin:
             f"delta_ratio={diagnostics.delta_ratio:.4f}",
             f"baseline_ratio={diagnostics.baseline_ratio:.4f}",
         )
+
+    def planned_exit_price(self, context: StrategyContext) -> Decimal | None:
+        diagnostics = self._signal_diagnostics(context)
+        if diagnostics is None:
+            return None
+        position = next((item for item in context.positions if item.symbol.upper() == self.symbol.upper()), None)
+        if position is None:
+            return None
+
+        if self.profile.strategy_id == "test_drive":
+            return diagnostics.previous_price
+        if position.quantity > 0:
+            return diagnostics.baseline_price * Decimal("0.992")
+        if position.quantity < 0:
+            return diagnostics.baseline_price * Decimal("1.008")
+        return None
 
     def _signal_diagnostics(self, context: StrategyContext) -> _SignalDiagnostics | None:
         del context

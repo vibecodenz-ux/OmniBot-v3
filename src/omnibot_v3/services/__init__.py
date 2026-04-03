@@ -20,8 +20,6 @@ if TYPE_CHECKING:
     )
     from omnibot_v3.services.market_worker import MarketWorker
     from omnibot_v3.services.orchestrator import TradingOrchestrator
-    from omnibot_v3.services.release_evidence import ReleaseEvidenceService
-    from omnibot_v3.services.release_readiness import ReleaseReadinessService
     from omnibot_v3.services.risk_engine import RiskPolicyEngine, StrategyRuntime
     from omnibot_v3.services.runtime_api import RuntimeApiService
     from omnibot_v3.services.runtime_health import RuntimeHealthEvaluator
@@ -58,8 +56,6 @@ __all__ = [
     "LoginAuditStore",
     "MarketWorker",
     "RiskPolicyEngine",
-    "ReleaseEvidenceService",
-    "ReleaseReadinessService",
     "RuntimeApiService",
     "SecretAccessError",
     "SecretPolicyService",
@@ -95,20 +91,10 @@ def __getattr__(name: str) -> Any:
 
         return ApiSmokeService
 
-    if name == "ReleaseReadinessService":
-        from omnibot_v3.services.release_readiness import ReleaseReadinessService
-
-        return ReleaseReadinessService
-
     if name == "AuditApiService":
         from omnibot_v3.services.audit_api import AuditApiService
 
         return AuditApiService
-
-    if name == "ReleaseEvidenceService":
-        from omnibot_v3.services.release_evidence import ReleaseEvidenceService
-
-        return ReleaseEvidenceService
 
     if name == "DataCatalog":
         from omnibot_v3.services.data_catalog import DataCatalog

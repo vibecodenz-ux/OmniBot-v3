@@ -7,9 +7,11 @@ import type {
   DashboardBundle,
   StrategyActivityCandle,
   StrategyActivityMarketSummary,
+  StrategyActivityPositionOverlay,
   StrategyActivityRankedSymbol,
   ViewId,
 } from "./lib/types";
+import { CandlestickChart } from "./components/CandlestickChart";
 import { LoginScreen } from "./components/LoginScreen";
 import { MarketModuleCard } from "./components/MarketModuleCard";
 import { Panel } from "./components/Panel";
@@ -18,6 +20,16 @@ import { Sidebar } from "./components/Sidebar";
 import { StatusBadge } from "./components/StatusBadge";
 
 type ThemeMode = "dark" | "light";
+
+const FALLBACK_BUILD_INFO = {
+  version: "0.1.0",
+  build_number: "---",
+  build_label: "Build:---",
+  update_source: {
+    repo: "Unknown repository",
+    branch: "main",
+  },
+};
 
 const VIEW_COPY: Record<ViewId, { title: string; description: string }> = {
   dashboard: { title: "Dashboard", description: "Capital and runtime." },
@@ -75,6 +87,14 @@ function loadView(): ViewId {
 function loadThemeMode(): ThemeMode {
   const value = window.localStorage.getItem("omnibot.themeMode");
   return value === "light" ? "light" : "dark";
+}
+
+function loadStoredBoolean(key: string, fallback: boolean): boolean {
+  const value = window.localStorage.getItem(key);
+  if (value === null) {
+    return fallback;
+  }
+  return value === "true";
 }
 
 function OverviewMetrics({ bundle }: { bundle: DashboardBundle }) {
@@ -238,77 +258,10 @@ function Sparkline({ points }: { points: Array<{ label: string; value: string | 
   );
 }
 
-function CandlestickChart({
-  symbol,
-  timeframe,
-  candles,
-}: {
-  symbol: string;
-  timeframe?: string | null;
-  candles: StrategyActivityCandle[];
-}) {
-  const values = candles.map((candle) => ({
-    label: candle.label,
-    open: Number(candle.open) || 0,
-    high: Number(candle.high) || 0,
-    low: Number(candle.low) || 0,
-    close: Number(candle.close) || 0,
-  }));
-
-  if (values.length < 2) {
-    return <div className="sparkline-empty">Awaiting candle data.</div>;
-  }
-
-  const highMax = Math.max(...values.map((item) => item.high));
-  const lowMin = Math.min(...values.map((item) => item.low));
-  const range = highMax - lowMin || 1;
-  const candleWidth = 100 / Math.max(values.length, 1);
-  const latest = values.at(-1);
-
-  return (
-    <div className="series-chart-block">
-      <div className="series-chart-header">
-        <span>{symbol}</span>
-        <small>{timeframe || "5m"} candles</small>
-      </div>
-      <div className="sparkline-shell candlestick-shell">
-        <svg className="sparkline-svg candlestick-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-          {values.map((value, index) => {
-            const centerX = (index + 0.5) * candleWidth;
-            const wickTop = 100 - (((value.high - lowMin) / range) * 84 + 8);
-            const wickBottom = 100 - (((value.low - lowMin) / range) * 84 + 8);
-            const openY = 100 - (((value.open - lowMin) / range) * 84 + 8);
-            const closeY = 100 - (((value.close - lowMin) / range) * 84 + 8);
-            const bodyTop = Math.min(openY, closeY);
-            const bodyHeight = Math.max(Math.abs(closeY - openY), 2);
-            const bodyClass = value.close >= value.open ? "candle-up" : "candle-down";
-
-            return (
-              <g key={`${value.label}-${index}`} className={bodyClass}>
-                <line x1={centerX} x2={centerX} y1={wickTop} y2={wickBottom} className="candle-wick" />
-                <rect
-                  x={centerX - candleWidth * 0.28}
-                  y={bodyTop}
-                  width={Math.max(candleWidth * 0.56, 1.8)}
-                  height={bodyHeight}
-                  className="candle-body"
-                />
-              </g>
-            );
-          })}
-        </svg>
-        <div className="sparkline-meta">
-          <span>{latest?.label || "Latest"}</span>
-          <strong>{`O ${formatMoney(latest?.open)} C ${formatMoney(latest?.close)}`}</strong>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function MarketScannerCard({ summary }: { summary: StrategyActivityMarketSummary }) {
+function MarketScannerCard({ summary, themeMode }: { summary: StrategyActivityMarketSummary; themeMode: ThemeMode }) {
   const rankedSymbols = asArray<StrategyActivityRankedSymbol>(summary.ranked_symbols);
   const candlesBySymbol = summary.candles_by_symbol || {};
+  const positionOverlaysBySymbol = summary.position_overlays_by_symbol || {};
   const availableSymbols = asArray<string>(summary.available_symbols).length
     ? asArray<string>(summary.available_symbols)
     : Object.keys(candlesBySymbol);
@@ -325,6 +278,7 @@ function MarketScannerCard({ summary }: { summary: StrategyActivityMarketSummary
   }, [availableSymbols, defaultSymbol, selectedSymbol]);
 
   const selectedCandles = selectedSymbol ? asArray<StrategyActivityCandle>(candlesBySymbol[selectedSymbol]) : [];
+  const selectedOverlays = selectedSymbol ? asArray<StrategyActivityPositionOverlay>(positionOverlaysBySymbol[selectedSymbol]) : [];
 
   return (
     <article className="series-card">
@@ -349,7 +303,7 @@ function MarketScannerCard({ summary }: { summary: StrategyActivityMarketSummary
         <small>{summary.candle_timeframe || "5m"} timeframe</small>
       </div>
       {selectedSymbol && selectedCandles.length ? (
-        <CandlestickChart symbol={selectedSymbol} timeframe={summary.candle_timeframe} candles={selectedCandles} />
+        <CandlestickChart symbol={selectedSymbol} timeframe={summary.candle_timeframe} candles={selectedCandles} overlays={selectedOverlays} themeMode={themeMode} />
       ) : (
         <div className="sparkline-empty">No historical candles yet.</div>
       )}
@@ -372,12 +326,12 @@ function MarketScannerCard({ summary }: { summary: StrategyActivityMarketSummary
   );
 }
 
-function ScannerInsights({ bundle }: { bundle: DashboardBundle }) {
+function ScannerInsights({ bundle, themeMode }: { bundle: DashboardBundle; themeMode: ThemeMode }) {
   const summaries = asArray(bundle.strategy_activity.market_summaries);
 
   return (
     <div className="series-grid">
-      {summaries.map((summary) => <MarketScannerCard key={summary.market} summary={summary} />)}
+      {summaries.map((summary) => <MarketScannerCard key={summary.market} summary={summary} themeMode={themeMode} />)}
     </div>
   );
 }
@@ -486,15 +440,20 @@ function DashboardContent({
   bundle,
   csrfToken,
   onRefresh,
+  themeMode,
 }: {
   view: ViewId;
   bundle: DashboardBundle;
   csrfToken: string;
   onRefresh: () => void;
+  themeMode: ThemeMode;
 }) {
+  const buildInfo = bundle.build || FALLBACK_BUILD_INFO;
   const queryClient = useQueryClient();
   const [commandFeedback, setCommandFeedback] = useState<string | null>(null);
   const [pendingCommands, setPendingCommands] = useState<Record<string, "start-market" | "stop-market" | undefined>>({});
+  const [recentDecisionsExpanded, setRecentDecisionsExpanded] = useState(() => loadStoredBoolean("omnibot.analytics.recentDecisionsExpanded.v2", false));
+  const [rankedMarketsExpanded, setRankedMarketsExpanded] = useState(() => loadStoredBoolean("omnibot.analytics.rankedMarketsExpanded", true));
 
   const modulesByMarket = useMemo(
     () => new Map(asArray(bundle.modules.modules).map((module) => [module.market, module])),
@@ -600,6 +559,14 @@ function DashboardContent({
     });
   }, [bundle.runtime.markets]);
 
+  useEffect(() => {
+    window.localStorage.setItem("omnibot.analytics.recentDecisionsExpanded.v2", String(recentDecisionsExpanded));
+  }, [recentDecisionsExpanded]);
+
+  useEffect(() => {
+    window.localStorage.setItem("omnibot.analytics.rankedMarketsExpanded", String(rankedMarketsExpanded));
+  }, [rankedMarketsExpanded]);
+
   const marketsPanel = (
     <Panel
       eyebrow="Trading Modules"
@@ -631,7 +598,6 @@ function DashboardContent({
       <Panel
         eyebrow="Overview"
         title="Overview"
-        actions={<button type="button" className="utility-button" onClick={onRefresh}><RefreshCw size={14} />Refresh</button>}
       >
         <OverviewMetrics bundle={bundle} />
       </Panel>
@@ -679,17 +645,50 @@ function DashboardContent({
           ))}
         </div>
       </Panel>
-      <Panel eyebrow="Scanner" title="Recent decisions">
-        <FeedList items={normalizeFeedItems(bundle.strategy_activity.events)} />
-      </Panel>
-      <Panel eyebrow="Signals" title="Ranked markets">
-        <ScannerInsights bundle={bundle} />
+      <Panel
+        eyebrow="Signals"
+        title="Ranked markets"
+        className="panel-span-full analytics-signals-panel"
+        actions={(
+          <button
+            type="button"
+            className="utility-button analytics-toggle-button"
+            aria-expanded={rankedMarketsExpanded}
+            onClick={() => setRankedMarketsExpanded((current) => !current)}
+          >
+            {rankedMarketsExpanded ? "Collapse" : "Expand"}
+          </button>
+        )}
+      >
+        <div hidden={!rankedMarketsExpanded}>
+              <ScannerInsights bundle={bundle} themeMode={themeMode} />
+        </div>
       </Panel>
       <Panel eyebrow="Charts" title="By market">
         <ChartGallery bundle={bundle} />
       </Panel>
       <Panel eyebrow="Runtime" title="Recent events">
         <FeedList items={normalizeFeedItems(bundle.runtime_audit.events)} />
+      </Panel>
+      <Panel
+        eyebrow="Scanner"
+        title="Recent decisions"
+        className="analytics-decisions-panel panel-span-full"
+        bodyClassName={recentDecisionsExpanded ? "panel-body-scrollable" : undefined}
+        actions={(
+          <button
+            type="button"
+            className="utility-button analytics-toggle-button"
+            aria-expanded={recentDecisionsExpanded}
+            onClick={() => setRecentDecisionsExpanded((current) => !current)}
+          >
+            {recentDecisionsExpanded ? "Collapse" : "Expand"}
+          </button>
+        )}
+      >
+        <div hidden={!recentDecisionsExpanded}>
+          <FeedList items={normalizeFeedItems(bundle.strategy_activity.events)} />
+        </div>
       </Panel>
     </div>
   );
@@ -871,6 +870,7 @@ function DashboardContent({
   const settingsPage = (
     <SettingsControlSurface
       csrfToken={csrfToken}
+      build={buildInfo}
       settings={bundle.settings}
       secrets={bundle.secrets}
       onRefresh={onRefresh}
@@ -951,6 +951,7 @@ export default function App() {
 
   const session = sessionQuery.data;
   const bundle = dashboardQuery.data;
+  const sidebarBuild = bundle?.build || FALLBACK_BUILD_INFO;
 
   if (!session) {
     return <div className="boot-screen">Loading session...</div>;
@@ -962,6 +963,8 @@ export default function App() {
         activeView={activeView}
         operatorName={session.actor_id}
         overallState={bundle?.ui_state.overall_state || "Awaiting bundle"}
+        buildLabel={sidebarBuild.build_label}
+        buildVersion={sidebarBuild.version}
         themeMode={themeMode}
         onNavigate={(view) => {
           setActiveView(view);
@@ -987,6 +990,7 @@ export default function App() {
             bundle={bundle}
             csrfToken={session.csrf_token}
             onRefresh={() => void dashboardQuery.refetch()}
+            themeMode={themeMode}
           />
         ) : null}
       </main>

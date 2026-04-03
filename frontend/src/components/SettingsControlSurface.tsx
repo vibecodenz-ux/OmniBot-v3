@@ -1,13 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  applySystemUpdate,
+  checkForUpdates,
   changeDashboardPassword,
+  getUpdateStatus,
   revokeSecret,
+  rollbackSystemUpdate,
   updateSettings,
   upsertSecret,
   validateSecret,
 } from "../lib/api";
 import { formatTimestamp, titleCase } from "../lib/format";
-import type { AuthSettingsPayload, RuntimeSettingsPayload, SecretMetadata, SecretsPayload, SettingsPayload } from "../lib/types";
+import type {
+  AuthSettingsPayload,
+  BuildInfo,
+  RuntimeSettingsPayload,
+  SecretMetadata,
+  SecretsPayload,
+  SettingsPayload,
+  UpdateCheckResult,
+  UpdateStatusPayload,
+} from "../lib/types";
 import { StatusBadge } from "./StatusBadge";
 
 type FeedbackTone = "success" | "warning" | "danger" | "neutral";
@@ -26,10 +39,21 @@ interface BrokerModule {
 
 interface SettingsControlSurfaceProps {
   csrfToken: string;
+  build?: BuildInfo;
   settings: SettingsPayload;
   secrets: SecretsPayload;
   onRefresh: () => Promise<unknown> | unknown;
 }
+
+const FALLBACK_BUILD_INFO: BuildInfo = {
+  version: "0.1.0",
+  build_number: "---",
+  build_label: "Build:---",
+  update_source: {
+    repo: "Unknown repository",
+    branch: "main",
+  },
+};
 
 const BROKER_MODULES: BrokerModule[] = [
   {
@@ -109,9 +133,10 @@ function latestSecretTimestamp(secrets: SecretMetadata[]): string | null {
   return timestamps[0] || null;
 }
 
-export function SettingsControlSurface({ csrfToken, settings, secrets, onRefresh }: SettingsControlSurfaceProps) {
+export function SettingsControlSurface({ csrfToken, build, settings, secrets, onRefresh }: SettingsControlSurfaceProps) {
   const secretList = Array.isArray(secrets.secrets) ? secrets.secrets : [];
   const secretsById = useMemo(() => new Map(secretList.map((secret) => [secret.secret_id, secret])), [secretList]);
+  const resolvedBuild = build || FALLBACK_BUILD_INFO;
 
   const [runtimeForm, setRuntimeForm] = useState<RuntimeSettingsPayload>(() => sanitizeRuntime(settings));
   const [authForm, setAuthForm] = useState<AuthSettingsPayload>(() => sanitizeAuth(settings));
@@ -119,11 +144,17 @@ export function SettingsControlSurface({ csrfToken, settings, secrets, onRefresh
   const [brokerDrafts, setBrokerDrafts] = useState<Record<string, Record<string, string>>>(() => buildBrokerDrafts(BROKER_MODULES));
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Record<string, FeedbackState>>({});
+  const [updateState, setUpdateState] = useState<UpdateCheckResult | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatusPayload>({ backups: [] });
 
   useEffect(() => {
     setRuntimeForm(sanitizeRuntime(settings));
     setAuthForm(sanitizeAuth(settings));
   }, [settings]);
+
+  useEffect(() => {
+    setUpdateState((current) => current && current.local.build_number === resolvedBuild.build_number ? current : null);
+  }, [resolvedBuild.build_number]);
 
   function setPanelFeedback(key: string, tone: FeedbackTone, message: string) {
     setFeedback((current) => ({ ...current, [key]: { tone, message } }));
@@ -131,7 +162,22 @@ export function SettingsControlSurface({ csrfToken, settings, secrets, onRefresh
 
   async function refreshAll() {
     await Promise.resolve(onRefresh());
+    try {
+      setUpdateStatus(await getUpdateStatus());
+    } catch {
+      // Keep the current updater surface usable even if status refresh fails.
+    }
   }
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        setUpdateStatus(await getUpdateStatus());
+      } catch (error) {
+        setPanelFeedback("updater", "danger", error instanceof Error ? error.message : "Could not load update status.");
+      }
+    })();
+  }, []);
 
   async function saveRuntimePolicy() {
     setBusyKey("runtime");
@@ -254,6 +300,73 @@ export function SettingsControlSurface({ csrfToken, settings, secrets, onRefresh
       setBusyKey(null);
     }
   }
+
+  async function runUpdaterAction() {
+    if (updateState?.update_available) {
+      setBusyKey("updater-apply");
+      try {
+        const response = await applySystemUpdate(csrfToken);
+        setPanelFeedback("updater", "warning", response.message || "Updater scheduled. OmniBot will restart shortly.");
+        await refreshAll();
+        window.setTimeout(() => {
+          window.location.reload();
+        }, Math.max(3, Number(response.reload_after_seconds || 6)) * 1000);
+      } catch (error) {
+        setPanelFeedback("updater", "danger", error instanceof Error ? error.message : "Update launch failed.");
+      } finally {
+        setBusyKey(null);
+      }
+      return;
+    }
+
+    setBusyKey("updater-check");
+    try {
+      const response = await checkForUpdates(csrfToken);
+      setUpdateState(response);
+      setUpdateStatus((current) => ({
+        ...current,
+        last_check: response,
+      }));
+      setPanelFeedback(
+        "updater",
+        response.update_available ? "warning" : "success",
+        response.message || (response.update_available ? "Update available." : "Already on the latest build."),
+      );
+      await refreshAll();
+    } catch (error) {
+      setPanelFeedback("updater", "danger", error instanceof Error ? error.message : "Update check failed.");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function runRollbackAction() {
+    setBusyKey("updater-rollback");
+    try {
+      const response = await rollbackSystemUpdate(csrfToken);
+      setPanelFeedback("updater", "warning", response.message || "Rollback scheduled. OmniBot will restart shortly.");
+      await refreshAll();
+      window.setTimeout(() => {
+        window.location.reload();
+      }, Math.max(3, Number(response.reload_after_seconds || 6)) * 1000);
+    } catch (error) {
+      setPanelFeedback("updater", "danger", error instanceof Error ? error.message : "Rollback launch failed.");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  const updaterBusy = busyKey === "updater-check" || busyKey === "updater-apply";
+  const rollbackBusy = busyKey === "updater-rollback";
+  const updaterButtonLabel = busyKey === "updater-check"
+    ? "Checking for updates"
+    : updateState?.update_available
+      ? "UPDATE NOW"
+      : "Check for Updates";
+  const updaterTone: FeedbackTone = updateState?.update_available
+    ? "warning"
+    : feedback.updater?.tone || "neutral";
+  const latestBackup = updateStatus.backups[0] || null;
 
   return (
     <div className="settings-control-stack">
@@ -472,6 +585,74 @@ export function SettingsControlSurface({ csrfToken, settings, secrets, onRefresh
         <section className="panel-surface">
           <header className="panel-header">
             <div className="panel-copy">
+              <p className="panel-eyebrow">Updater</p>
+              <h2>GitHub build updates</h2>
+            </div>
+          </header>
+          <div className="panel-body settings-form-stack">
+            <div className="settings-update-card-grid">
+              <article className="support-card settings-update-card">
+                <span>Installed build</span>
+                <strong>{resolvedBuild.build_label}</strong>
+                <small>Version {resolvedBuild.version}</small>
+              </article>
+              <article className="support-card settings-update-card">
+                <span>GitHub source</span>
+                <strong>{resolvedBuild.update_source?.branch || "main"}</strong>
+                <small>{resolvedBuild.update_source?.repo || "Unknown repository"}</small>
+              </article>
+              <article className="support-card settings-update-card">
+                <span>Status</span>
+                <strong>{updateState?.remote?.build_label || resolvedBuild.build_label}</strong>
+                <small>{updateState?.checked_at ? `Checked ${formatTimestamp(updateState.checked_at)}` : "No remote check yet."}</small>
+              </article>
+            </div>
+            <div className="settings-update-meta">
+              <div className="settings-update-status">
+                <StatusBadge
+                  label={updateState?.status || "local-build"}
+                  tone={updaterTone}
+                />
+                <span>
+                  {updateState?.remote
+                    ? `Remote version ${updateState.remote.version} · ${updateState.remote.build_label}`
+                    : "Checks GitHub main and preserves data, secrets, tools, and your Python environment during update."}
+                </span>
+              </div>
+              <div className="settings-form-actions">
+                <button type="button" className="primary-button" onClick={() => void runUpdaterAction()} disabled={updaterBusy}>
+                  {updaterButtonLabel}
+                </button>
+                <button type="button" className="utility-button" onClick={() => void runRollbackAction()} disabled={rollbackBusy || !latestBackup}>
+                  {rollbackBusy ? "Rolling back" : "Rollback last update"}
+                </button>
+                {feedback.updater ? <StatusBadge label={feedback.updater.message} tone={feedback.updater.tone} /> : null}
+              </div>
+              <div className="settings-update-history">
+                <article className="support-card settings-update-card settings-update-history-card">
+                  <span>Last action</span>
+                  <strong>{updateStatus.last_action?.action || "No update action yet"}</strong>
+                  <small>{updateStatus.last_action?.message || "No updater activity has been recorded yet."}</small>
+                  <small>
+                    {updateStatus.last_action?.status
+                      ? `${titleCase(updateStatus.last_action.status)} ${formatTimestamp(updateStatus.last_action.completed_at || updateStatus.last_action.requested_at || null)}`
+                      : ""}
+                  </small>
+                </article>
+                <article className="support-card settings-update-card settings-update-history-card">
+                  <span>Latest backup</span>
+                  <strong>{latestBackup?.source_build_label || latestBackup?.archive_name || "No backup yet"}</strong>
+                  <small>{latestBackup ? `Created ${formatTimestamp(latestBackup.created_at)}` : "A code backup will be created automatically before update or rollback."}</small>
+                  <small>{latestBackup?.archive_name || ""}</small>
+                </article>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="panel-surface">
+          <header className="panel-header">
+            <div className="panel-copy">
               <p className="panel-eyebrow">Environment</p>
               <h2>Deployment</h2>
             </div>
@@ -484,38 +665,38 @@ export function SettingsControlSurface({ csrfToken, settings, secrets, onRefresh
             </article>
           </div>
         </section>
-
-        <section className="panel-surface">
-          <header className="panel-header">
-            <div className="panel-copy">
-              <p className="panel-eyebrow">Dashboard password</p>
-              <h2>Change operator login</h2>
-            </div>
-          </header>
-          <div className="panel-body settings-form-stack">
-            <div className="settings-form-grid settings-form-grid-single">
-              <label className="settings-field">
-                <span>Current password</span>
-                <input type="password" value={passwordForm.current} onChange={(event) => setPasswordForm((current) => ({ ...current, current: event.target.value }))} />
-              </label>
-              <label className="settings-field">
-                <span>New password</span>
-                <input type="password" minLength={8} value={passwordForm.next} onChange={(event) => setPasswordForm((current) => ({ ...current, next: event.target.value }))} />
-              </label>
-              <label className="settings-field">
-                <span>Confirm password</span>
-                <input type="password" minLength={8} value={passwordForm.confirm} onChange={(event) => setPasswordForm((current) => ({ ...current, confirm: event.target.value }))} />
-              </label>
-            </div>
-            <div className="settings-form-actions">
-              <button type="button" className="primary-button" onClick={() => void savePassword()} disabled={busyKey === "password"}>
-                {busyKey === "password" ? "Updating" : "Update password"}
-              </button>
-            </div>
-            {feedback.password ? <p className={`settings-feedback settings-feedback-${feedback.password.tone}`}>{feedback.password.message}</p> : null}
-          </div>
-        </section>
       </div>
+
+      <section className="panel-surface">
+        <header className="panel-header">
+          <div className="panel-copy">
+            <p className="panel-eyebrow">Dashboard password</p>
+            <h2>Change operator login</h2>
+          </div>
+        </header>
+        <div className="panel-body settings-form-stack">
+          <div className="settings-form-grid settings-form-grid-single">
+            <label className="settings-field">
+              <span>Current password</span>
+              <input type="password" value={passwordForm.current} onChange={(event) => setPasswordForm((current) => ({ ...current, current: event.target.value }))} />
+            </label>
+            <label className="settings-field">
+              <span>New password</span>
+              <input type="password" minLength={8} value={passwordForm.next} onChange={(event) => setPasswordForm((current) => ({ ...current, next: event.target.value }))} />
+            </label>
+            <label className="settings-field">
+              <span>Confirm password</span>
+              <input type="password" minLength={8} value={passwordForm.confirm} onChange={(event) => setPasswordForm((current) => ({ ...current, confirm: event.target.value }))} />
+            </label>
+          </div>
+          <div className="settings-form-actions">
+            <button type="button" className="primary-button" onClick={() => void savePassword()} disabled={busyKey === "password"}>
+              {busyKey === "password" ? "Updating" : "Update password"}
+            </button>
+          </div>
+          {feedback.password ? <p className={`settings-feedback settings-feedback-${feedback.password.tone}`}>{feedback.password.message}</p> : null}
+        </div>
+      </section>
     </div>
   );
 }

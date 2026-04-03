@@ -84,7 +84,7 @@ def render_environment_template(config: SystemdServiceConfig) -> str:
         "OMNIBOT_ENV=production",
         "OMNIBOT_ADMIN_PASSWORD=change-me",
         "OMNIBOT_DB_DSN=postgresql://omnibot:change-me@localhost:5432/omnibot",
-        "OMNIBOT_BIND_HOST=0.0.0.0",
+        "OMNIBOT_BIND_HOST=127.0.0.1",
         "OMNIBOT_PORT=8000",
         "OMNIBOT_LOG_LEVEL=info",
         "OMNIBOT_SECRETS_DIR=secrets",

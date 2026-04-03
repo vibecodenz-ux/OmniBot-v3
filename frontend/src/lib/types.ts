@@ -270,6 +270,12 @@ export interface StrategyActivityCandle {
   volume?: string | number | null;
 }
 
+export interface StrategyActivityPositionOverlay {
+  side?: string | null;
+  entry_price?: string | number | null;
+  close_target_price?: string | number | null;
+}
+
 export interface StrategyActivityMarketSummary {
   market: string;
   warmup_status?: string | null;
@@ -280,6 +286,7 @@ export interface StrategyActivityMarketSummary {
   ranked_symbols?: StrategyActivityRankedSymbol[];
   series?: StrategyActivitySeries[];
   candles_by_symbol?: Record<string, StrategyActivityCandle[]>;
+  position_overlays_by_symbol?: Record<string, StrategyActivityPositionOverlay[]>;
   candle_timeframe?: string | null;
 }
 
@@ -311,12 +318,68 @@ export interface SettingsPayload {
   auth: AuthSettingsPayload;
 }
 
+export interface UpdateSourceInfo {
+  repo: string;
+  branch: string;
+  metadata_url?: string;
+  archive_url?: string;
+}
+
+export interface BuildInfo {
+  version: string;
+  build_number: string;
+  build_label: string;
+  update_source?: UpdateSourceInfo;
+}
+
+export interface UpdateCheckResult {
+  local: BuildInfo;
+  remote?: BuildInfo | null;
+  update_available: boolean;
+  status?: string;
+  checked_at?: string | null;
+  message?: string;
+}
+
+export interface UpdateBackupEntry {
+  archive_name: string;
+  created_at: string;
+  source_build_label?: string | null;
+  source_version?: string | null;
+}
+
+export interface UpdateActionStatus {
+  action?: string;
+  status?: string;
+  requested_at?: string | null;
+  completed_at?: string | null;
+  message?: string;
+  current_build_label?: string | null;
+  target_build_label?: string | null;
+  backup_archive_name?: string | null;
+  rollback_archive_name?: string | null;
+}
+
+export interface UpdateStatusPayload {
+  last_check?: UpdateCheckResult | null;
+  last_action?: UpdateActionStatus | null;
+  backups: UpdateBackupEntry[];
+}
+
+export interface UpdateApplyResponse {
+  accepted: boolean;
+  message?: string;
+  target?: BuildInfo | null;
+  reload_after_seconds?: number;
+}
+
 export interface DashboardBundle {
   runtime: RuntimeOverview;
   health: HealthSummary;
   ui_state: UiState;
   portfolio: PortfolioOverview;
   analytics: AnalyticsOverview;
+  build?: BuildInfo;
   settings: SettingsPayload;
   runtime_audit: AuditPayload;
   login_audit: AuditPayload;

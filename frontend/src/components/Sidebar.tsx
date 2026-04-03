@@ -13,13 +13,15 @@ interface SidebarProps {
   activeView: ViewId;
   operatorName: string;
   overallState: string;
+  buildLabel: string;
+  buildVersion: string;
   themeMode: "dark" | "light";
   onNavigate: (view: ViewId) => void;
   onToggleTheme: () => void;
   onLogout: () => void;
 }
 
-export function Sidebar({ activeView, operatorName, overallState, themeMode, onNavigate, onToggleTheme, onLogout }: SidebarProps) {
+export function Sidebar({ activeView, operatorName, overallState, buildLabel, buildVersion, themeMode, onNavigate, onToggleTheme, onLogout }: SidebarProps) {
   const ThemeIcon = themeMode === "dark" ? Sun : Moon;
   const nextThemeLabel = themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode";
 
@@ -53,6 +55,10 @@ export function Sidebar({ activeView, operatorName, overallState, themeMode, onN
           <span>Live surface</span>
           <strong>{overallState}</strong>
           <small>Signed in as {operatorName}</small>
+          <div className="sidebar-build">
+            <strong>{buildLabel}</strong>
+            <small>Version {buildVersion}</small>
+          </div>
         </div>
         <div className="sidebar-footer-actions">
           <button

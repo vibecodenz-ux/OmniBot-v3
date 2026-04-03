@@ -1,4 +1,14 @@
-import type { AuthSettingsPayload, DashboardBundle, RuntimeSettingsPayload, SecretMetadata, SessionView, SettingsPayload } from "./types";
+import type {
+  AuthSettingsPayload,
+  DashboardBundle,
+  RuntimeSettingsPayload,
+  SecretMetadata,
+  SessionView,
+  SettingsPayload,
+  UpdateApplyResponse,
+  UpdateCheckResult,
+  UpdateStatusPayload,
+} from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 
@@ -70,6 +80,31 @@ export async function logout(csrfToken: string): Promise<{ logged_out: boolean }
 
 export async function getDashboardBundle(): Promise<DashboardBundle> {
   return requestJson<DashboardBundle>("/v1/dashboard");
+}
+
+export async function checkForUpdates(csrfToken: string): Promise<UpdateCheckResult> {
+  return requestJson<UpdateCheckResult>("/v1/system/update/check", {
+    method: "POST",
+    csrfToken,
+  });
+}
+
+export async function applySystemUpdate(csrfToken: string): Promise<UpdateApplyResponse> {
+  return requestJson<UpdateApplyResponse>("/v1/system/update/apply", {
+    method: "POST",
+    csrfToken,
+  });
+}
+
+export async function getUpdateStatus(): Promise<UpdateStatusPayload> {
+  return requestJson<UpdateStatusPayload>("/v1/system/update/status");
+}
+
+export async function rollbackSystemUpdate(csrfToken: string): Promise<UpdateApplyResponse> {
+  return requestJson<UpdateApplyResponse>("/v1/system/update/rollback", {
+    method: "POST",
+    csrfToken,
+  });
 }
 
 export async function sendRuntimeCommand(csrfToken: string, market: string, command: "start-market" | "stop-market") {

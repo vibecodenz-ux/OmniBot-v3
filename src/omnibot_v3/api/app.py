@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from omnibot_v3 import __version__
 from omnibot_v3.domain import (
     ApiCommandType,
     CookieSameSite,
@@ -74,6 +76,7 @@ from omnibot_v3.services.settings_api import SettingsApiService
 from omnibot_v3.services.strategy_scanner import StrategyScannerService
 from omnibot_v3.services.trade_journal import TradeJournalService
 from omnibot_v3.services.trading_modules import TradingModuleService
+from omnibot_v3.services.update_manager import UpdateApplyError, UpdateCheckError, UpdateManager
 
 
 class LoginBody(BaseModel):
@@ -186,6 +189,7 @@ class RuntimeApiAppDependencies:
     trading_module_service: TradingModuleService
     trade_journal_service: TradeJournalService
     market_hours_service: MarketHoursService
+    update_manager: UpdateManager
 
 
 def create_app(
@@ -261,8 +265,9 @@ def create_app(
         historical_bar_store=historical_bar_store,
     )
     runtime_service.on_market_started = strategy_scanner.start_market
-    runtime_service.on_market_stopped = strategy_scanner.stop_market
     trading_module_service.activity_provider = strategy_scanner.activity_payload
+    for market in runtime_service.workers:
+        strategy_scanner.start_market(market)
 
     dependencies = RuntimeApiAppDependencies(
         service=runtime_service,
@@ -285,6 +290,10 @@ def create_app(
             operator_state_service=operator_state_service,
         ),
         market_hours_service=MarketHoursService(),
+        update_manager=UpdateManager(
+            repo_root=repo_root,
+            config=config,
+        ),
     )
 
     def refresh_configured_workers() -> None:
@@ -302,11 +311,14 @@ def create_app(
         strategy_scanner.workers.clear()
         strategy_scanner.workers.update(updated_workers)
 
-    app = FastAPI(title="OmniBot v3 API", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        try:
+            yield
+        finally:
+            strategy_scanner.stop_all()
 
-    @app.on_event("shutdown")
-    def stop_background_services() -> None:
-        strategy_scanner.stop_all()
+    app = FastAPI(title="OmniBot v3 API", version=__version__, lifespan=lifespan)
 
     @app.middleware("http")
     async def disable_dashboard_caching(request: Request, call_next):
@@ -420,6 +432,7 @@ def create_app(
             "ui_state": ui_state_response_to_dict(ui_state),
             "portfolio": portfolio_overview_response_to_dict(portfolio),
             "analytics": portfolio_analytics_response_to_dict(analytics),
+            "build": dependencies.update_manager.get_build_payload(),
             "settings": dependencies.settings_service.get_settings_payload(),
             "runtime_audit": dependencies.audit_service.get_runtime_audit_payload(),
             "login_audit": dependencies.audit_service.get_login_audit_payload(),
@@ -429,6 +442,56 @@ def create_app(
             "market_hours": dependencies.market_hours_service.get_payload(),
             "strategy_activity": strategy_scanner.decision_log_payload(),
         }
+
+    @app.get("/v1/system/build")
+    def get_build_info(request: Request) -> dict[str, object]:
+        require_session(request)
+        return dependencies.update_manager.get_build_payload()
+
+    @app.post("/v1/system/update/check")
+    def post_update_check(request: Request) -> dict[str, object]:
+        require_session(request, require_csrf=True)
+        try:
+            return dependencies.update_manager.check_for_updates()
+        except UpdateCheckError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.post("/v1/system/update/apply")
+    def post_update_apply(request: Request) -> dict[str, object]:
+        require_session(request, require_csrf=True)
+        current_config = dependencies.settings_service.get_config()
+        try:
+            payload = dependencies.update_manager.schedule_update(
+                bind_host=current_config.dashboard_host,
+                port=current_config.dashboard_port,
+            )
+        except UpdateCheckError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except UpdateApplyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        dependencies.auth_service.store.delete_all()
+        return payload
+
+    @app.get("/v1/system/update/status")
+    def get_update_status(request: Request) -> dict[str, object]:
+        require_session(request)
+        return dependencies.update_manager.get_update_status_payload()
+
+    @app.post("/v1/system/update/rollback")
+    def post_update_rollback(request: Request) -> dict[str, object]:
+        require_session(request, require_csrf=True)
+        current_config = dependencies.settings_service.get_config()
+        try:
+            payload = dependencies.update_manager.schedule_rollback(
+                bind_host=current_config.dashboard_host,
+                port=current_config.dashboard_port,
+            )
+        except UpdateApplyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        dependencies.auth_service.store.delete_all()
+        return payload
 
     @app.get("/v1/runtime/health")
     def get_runtime_health(request: Request) -> dict[str, object]:
