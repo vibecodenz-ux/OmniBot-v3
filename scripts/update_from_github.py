@@ -5,6 +5,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -18,6 +19,8 @@ from urllib.request import urlretrieve
 
 PRESERVE_NAMES = frozenset({".git", ".venv", ".tools", "data", "secrets", "Put github exports here"})
 SYSTEMD_SERVICE_NAME = "omnibot-v3"
+BUILD_PATTERN = re.compile(r'^__build__\s*=\s*"(?P<value>[^"]+)"', re.MULTILINE)
+VERSION_PATTERN = re.compile(r'^__version__\s*=\s*"(?P<value>[^"]+)"', re.MULTILINE)
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,6 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bind-host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--parent-pid", type=int, default=0)
+    parser.add_argument("--service-name", default=SYSTEMD_SERVICE_NAME)
+    parser.add_argument("--install-extras", default="api")
     return parser.parse_args()
 
 
@@ -57,6 +62,36 @@ def write_update_state(state_file: Path, last_action: dict[str, object]) -> None
     payload = read_update_state(state_file)
     payload["last_action"] = last_action
     state_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def update_action_payload(
+    *,
+    action: str,
+    status: str,
+    current_build_label: str,
+    target_build_label: str,
+    backup_archive_name: str,
+    rollback_archive_name: str | None,
+    message: str,
+    stage: str,
+    work_root: Path | None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "action": action,
+        "status": status,
+        "requested_at": utc_now(),
+        "current_build_label": current_build_label,
+        "target_build_label": target_build_label,
+        "backup_archive_name": backup_archive_name,
+        "rollback_archive_name": rollback_archive_name,
+        "stage": stage,
+        "message": message,
+    }
+    if status in {"completed", "failed"}:
+        payload["completed_at"] = utc_now()
+    if work_root is not None:
+        payload["work_root"] = str(work_root)
+    return payload
 
 
 def pid_exists(pid: int) -> bool:
@@ -98,6 +133,12 @@ def fail_dashboard_process(parent_pid: int) -> None:
         os.kill(parent_pid, kill_signal)
 
 
+def repo_python_executable(repo_root: Path) -> Path:
+    if os.name == "nt":
+        return repo_root / ".venv" / "Scripts" / "python.exe"
+    return repo_root / ".venv" / "bin" / "python"
+
+
 def copy_repository_children(source_root: Path, destination_root: Path, exclude_names: set[str] | frozenset[str]) -> None:
     for child in source_root.iterdir():
         if child.name in exclude_names:
@@ -118,6 +159,14 @@ def remove_repo_children(repo_root: Path, exclude_names: set[str] | frozenset[st
             shutil.rmtree(child)
         else:
             child.unlink()
+
+
+def move_repository_children(source_root: Path, destination_root: Path, exclude_names: set[str] | frozenset[str]) -> None:
+    destination_root.mkdir(parents=True, exist_ok=True)
+    for child in list(source_root.iterdir()):
+        if child.name in exclude_names:
+            continue
+        shutil.move(str(child), destination_root / child.name)
 
 
 def zip_directory_contents(source_root: Path, archive_path: Path) -> None:
@@ -169,11 +218,140 @@ def extract_archive(archive_path: Path, destination_root: Path) -> None:
         archive.extractall(destination_root)
 
 
-def downloaded_source_root(extract_root: Path) -> Path:
+def extracted_source_root(extract_root: Path) -> Path:
+    if (extract_root / "pyproject.toml").exists():
+        return extract_root
+
     directories = [item for item in extract_root.iterdir() if item.is_dir()]
-    if len(directories) == 1:
+    if len(directories) == 1 and (directories[0] / "pyproject.toml").exists():
         return directories[0]
+
     raise RuntimeError("Downloaded update archive did not contain a repository root.")
+
+
+def read_source_metadata(source_root: Path) -> tuple[str, str]:
+    init_path = source_root / "src" / "omnibot_v3" / "__init__.py"
+    if not init_path.exists():
+        raise RuntimeError(f"Updated source is missing build metadata: {init_path}")
+
+    payload = init_path.read_text(encoding="utf-8")
+    build_match = BUILD_PATTERN.search(payload)
+    version_match = VERSION_PATTERN.search(payload)
+    if build_match is None or version_match is None:
+        raise RuntimeError("Updated source is missing version or build metadata.")
+    return version_match.group("value"), build_match.group("value")
+
+
+def validate_source_metadata(source_root: Path, *, target_version: str, target_build_label: str) -> None:
+    version, build_number = read_source_metadata(source_root)
+    expected_build_number = target_build_label.split(":", 1)[-1]
+    resolved_build_label = f"Build:{build_number}"
+    if version != target_version:
+        raise RuntimeError(
+            f"Updated source version mismatch: expected {target_version}, found {version}."
+        )
+    if resolved_build_label != target_build_label:
+        raise RuntimeError(
+            f"Updated source build mismatch: expected {target_build_label}, found {resolved_build_label}."
+        )
+    if build_number != expected_build_number:
+        raise RuntimeError(
+            f"Updated source build number mismatch: expected {expected_build_number}, found {build_number}."
+        )
+
+
+def stage_source_tree(source_root: Path, destination_root: Path) -> None:
+    if destination_root.exists():
+        shutil.rmtree(destination_root)
+    destination_root.mkdir(parents=True, exist_ok=True)
+    copy_repository_children(source_root, destination_root, PRESERVE_NAMES)
+
+
+def install_target(source_root: Path, install_extras: str) -> str:
+    if not install_extras.strip():
+        return str(source_root)
+    return f"{source_root}[{install_extras}]"
+
+
+def sync_runtime_environment(source_root: Path, repo_root: Path, install_extras: str) -> None:
+    python_path = repo_python_executable(repo_root)
+    if not python_path.exists():
+        raise RuntimeError(f"Virtual environment is missing: {python_path}")
+
+    command = [
+        str(python_path),
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "-e",
+        install_target(source_root, install_extras),
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=source_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        stdout = completed.stdout.strip()
+        stderr = completed.stderr.strip()
+        details = "\n".join(part for part in (stdout, stderr) if part)
+        raise RuntimeError(f"Dependency sync failed.\n{details}".strip())
+
+
+def transactional_switch_repository(repo_root: Path, staged_root: Path, original_root: Path) -> None:
+    original_root.mkdir(parents=True, exist_ok=True)
+    move_repository_children(repo_root, original_root, PRESERVE_NAMES)
+    try:
+        move_repository_children(staged_root, repo_root, PRESERVE_NAMES)
+    except Exception:
+        restore_repository_children(repo_root, original_root)
+        raise
+
+
+def restore_repository_children(repo_root: Path, original_root: Path) -> None:
+    remove_repo_children(repo_root, PRESERVE_NAMES)
+    move_repository_children(original_root, repo_root, PRESERVE_NAMES)
+
+
+def smoke_validate_repo(repo_root: Path) -> None:
+    python_path = repo_python_executable(repo_root)
+    if not python_path.exists():
+        raise RuntimeError(f"Virtual environment is missing after cutover: {python_path}")
+
+    environment = dict(os.environ)
+    python_path_entry = str(repo_root / "src")
+    if environment.get("PYTHONPATH"):
+        environment["PYTHONPATH"] = python_path_entry + os.pathsep + environment["PYTHONPATH"]
+    else:
+        environment["PYTHONPATH"] = python_path_entry
+
+    command = [
+        str(python_path),
+        "-c",
+        (
+            "from omnibot_v3 import __build_label__; "
+            "from omnibot_v3.api.app import create_app; "
+            "app = create_app(); "
+            "print(__build_label__); "
+            "print(app.title)"
+        ),
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    if completed.returncode != 0:
+        stdout = completed.stdout.strip()
+        stderr = completed.stderr.strip()
+        details = "\n".join(part for part in (stdout, stderr) if part)
+        raise RuntimeError(f"Post-update smoke validation failed.\n{details}".strip())
 
 
 def running_inside_systemd_service(service_name: str) -> bool:
@@ -264,35 +442,41 @@ def main() -> int:
     rollback_archive = Path(args.rollback_archive).resolve() if args.rollback_archive else None
 
     temp_root = Path(tempfile.mkdtemp(prefix="omnibot-update-"))
+    work_root = state_file.parent / "update-work" / datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
     archive_path = temp_root / "source.zip"
     extract_root = temp_root / "extract"
     extract_root.mkdir(parents=True, exist_ok=True)
+    staged_root = work_root / "staged-release"
+    original_root = work_root / "original-release"
 
     is_rollback = rollback_archive is not None
     is_update = not is_rollback
     if is_update and not args.archive_url:
         raise RuntimeError("Archive URL is required for update mode.")
 
-    systemd_managed = running_inside_systemd_service(SYSTEMD_SERVICE_NAME) or systemd_service_active(SYSTEMD_SERVICE_NAME)
+    service_name = args.service_name or SYSTEMD_SERVICE_NAME
+    systemd_managed = running_inside_systemd_service(service_name) or systemd_service_active(service_name)
+    action_name = "rollback" if is_rollback else "update"
+    rollback_archive_name = rollback_archive.name if rollback_archive else None
+    created_backup_name = args.backup_archive_name
+    switched = False
 
     try:
+        work_root.mkdir(parents=True, exist_ok=True)
         write_update_state(
             state_file,
-            {
-                "action": "rollback" if is_rollback else "update",
-                "status": "running",
-                "requested_at": utc_now(),
-                "current_build_label": args.current_build_label,
-                "target_build_label": args.target_build_label,
-                "backup_archive_name": args.backup_archive_name,
-                "rollback_archive_name": rollback_archive.name if rollback_archive else None,
-                "message": "Rollback is running." if is_rollback else "Update is running.",
-            },
+            update_action_payload(
+                action=action_name,
+                status="running",
+                current_build_label=args.current_build_label,
+                target_build_label=args.target_build_label,
+                backup_archive_name=args.backup_archive_name,
+                rollback_archive_name=rollback_archive_name,
+                message="Preparing staged update files." if is_update else "Preparing staged rollback files.",
+                stage="preflight",
+                work_root=work_root,
+            ),
         )
-
-        time.sleep(2)
-        if not systemd_managed:
-            stop_dashboard_process(args.parent_pid)
 
         created_backup = new_code_backup(
             source_root=repo_root,
@@ -302,55 +486,113 @@ def main() -> int:
             source_build_label=args.current_build_label,
             source_version=args.current_version,
         )
+        created_backup_name = created_backup.name
 
         if is_rollback:
             if rollback_archive is None or not rollback_archive.exists():
                 raise RuntimeError(f"Rollback archive not found: {rollback_archive}")
             extract_archive(rollback_archive, extract_root)
-            source_root = extract_root
+            source_root = extracted_source_root(extract_root)
         else:
+            write_update_state(
+                state_file,
+                update_action_payload(
+                    action=action_name,
+                    status="running",
+                    current_build_label=args.current_build_label,
+                    target_build_label=args.target_build_label,
+                    backup_archive_name=created_backup_name,
+                    rollback_archive_name=rollback_archive_name,
+                    message="Downloading target build from the configured update source.",
+                    stage="download",
+                    work_root=work_root,
+                ),
+            )
             urlretrieve(args.archive_url, archive_path)
             extract_archive(archive_path, extract_root)
-            source_root = downloaded_source_root(extract_root)
-
-        remove_repo_children(repo_root, PRESERVE_NAMES)
-        copy_repository_children(source_root, repo_root, PRESERVE_NAMES)
+            source_root = extracted_source_root(extract_root)
 
         write_update_state(
             state_file,
-            {
-                "action": "rollback" if is_rollback else "update",
-                "status": "completed",
-                "requested_at": utc_now(),
-                "completed_at": utc_now(),
-                "current_build_label": args.current_build_label,
-                "target_build_label": args.target_build_label,
-                "backup_archive_name": created_backup.name,
-                "rollback_archive_name": rollback_archive.name if rollback_archive else None,
-                "message": "Rollback completed and OmniBot is restarting." if is_rollback else "Update completed and OmniBot is restarting.",
-            },
+            update_action_payload(
+                action=action_name,
+                status="running",
+                current_build_label=args.current_build_label,
+                target_build_label=args.target_build_label,
+                backup_archive_name=created_backup_name,
+                rollback_archive_name=rollback_archive_name,
+                message="Validating staged build metadata and syncing dependencies.",
+                stage="validate",
+                work_root=work_root,
+            ),
+        )
+        validate_source_metadata(
+            source_root,
+            target_version=args.target_version,
+            target_build_label=args.target_build_label,
+        )
+        stage_source_tree(source_root, staged_root)
+        sync_runtime_environment(staged_root, repo_root, args.install_extras)
+
+        write_update_state(
+            state_file,
+            update_action_payload(
+                action=action_name,
+                status="running",
+                current_build_label=args.current_build_label,
+                target_build_label=args.target_build_label,
+                backup_archive_name=created_backup_name,
+                rollback_archive_name=rollback_archive_name,
+                message="Switching the live code tree to the staged build.",
+                stage="switch",
+                work_root=work_root,
+            ),
+        )
+        transactional_switch_repository(repo_root, staged_root, original_root)
+        switched = True
+        sync_runtime_environment(repo_root, repo_root, args.install_extras)
+        smoke_validate_repo(repo_root)
+
+        write_update_state(
+            state_file,
+            update_action_payload(
+                action=action_name,
+                status="completed",
+                current_build_label=args.current_build_label,
+                target_build_label=args.target_build_label,
+                backup_archive_name=created_backup_name,
+                rollback_archive_name=rollback_archive_name,
+                message="Rollback completed and OmniBot is restarting." if is_rollback else "Update completed and OmniBot is restarting.",
+                stage="restart",
+                work_root=work_root,
+            ),
         )
 
         if systemd_managed:
             fail_dashboard_process(args.parent_pid)
             return 0
 
+        time.sleep(1)
+        stop_dashboard_process(args.parent_pid)
         restart_dashboard(repo_root, bind_host=args.bind_host, port=args.port, systemd_managed=systemd_managed)
         return 0
     except Exception as exc:
+        if switched:
+            with contextlib.suppress(Exception):
+                restore_repository_children(repo_root, original_root)
         write_update_state(
             state_file,
-            {
-                "action": "rollback" if is_rollback else "update",
-                "status": "failed",
-                "requested_at": utc_now(),
-                "completed_at": utc_now(),
-                "current_build_label": args.current_build_label,
-                "target_build_label": args.target_build_label,
-                "backup_archive_name": args.backup_archive_name,
-                "rollback_archive_name": rollback_archive.name if rollback_archive else None,
-                "message": str(exc),
-            },
+            update_action_payload(
+                action=action_name,
+                status="failed",
+                current_build_label=args.current_build_label,
+                target_build_label=args.target_build_label,
+                backup_archive_name=created_backup_name,
+                rollback_archive_name=rollback_archive_name,
+                message=str(exc),
+                stage="rollback" if switched else "failed",
+                work_root=work_root,
+            ),
         )
         raise
     finally:

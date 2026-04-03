@@ -89,6 +89,10 @@ class AppConfig:
     dashboard_port: int = 8000
     update_repo: str = "vibecodenz-ux/OmniBot-v3"
     update_branch: str = "main"
+    update_metadata_url: str | None = None
+    update_archive_url: str | None = None
+    update_install_extras: str = "api"
+    systemd_service_name: str = "omnibot-v3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +261,11 @@ def load_config(
     dashboard_port = _parse_int(env.get("OMNIBOT_PORT", ""), 8000)
     update_repo = env.get("OMNIBOT_UPDATE_REPO", "vibecodenz-ux/OmniBot-v3")
     update_branch = env.get("OMNIBOT_UPDATE_BRANCH", "main")
+    update_metadata_url = env.get("OMNIBOT_UPDATE_METADATA_URL") or None
+    update_archive_url = env.get("OMNIBOT_UPDATE_ARCHIVE_URL") or None
+    default_update_extras = "api,postgres" if os.name != "nt" else "api"
+    update_install_extras = env.get("OMNIBOT_UPDATE_EXTRAS", default_update_extras)
+    systemd_service_name = env.get("OMNIBOT_SYSTEMD_SERVICE_NAME", "omnibot-v3")
 
     return AppConfig(
         environment=environment,
@@ -272,4 +281,8 @@ def load_config(
         dashboard_port=dashboard_port,
         update_repo=update_repo,
         update_branch=update_branch,
+        update_metadata_url=update_metadata_url,
+        update_archive_url=update_archive_url,
+        update_install_extras=update_install_extras,
+        systemd_service_name=systemd_service_name,
     )

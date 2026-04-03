@@ -98,9 +98,9 @@ class UpdateManager:
             "status": "update-available" if update_available else "current",
             "checked_at": datetime.now(UTC).isoformat(),
             "message": (
-                f"Update available: {remote.build_label} is ready on GitHub {self._config.update_branch}."
+                f"Update available: {remote.build_label} is ready from the configured update source."
                 if update_available
-                else f"You are already on the latest GitHub build: {local.build_label}."
+                else f"You are already on the latest configured build: {local.build_label}."
             ),
         }
         self._update_state(last_check=payload)
@@ -114,51 +114,19 @@ class UpdateManager:
         update_script = self._stage_update_script()
         local = self._local_build()
         target = check_payload["remote"]
-        archive_url = self._archive_url()
         backup_archive_name = self._build_backup_archive_name(local)
-        command = [
-            self._python_launcher(),
-            str(update_script),
-            "--repo-root",
-            str(self._repo_root),
-            "--backup-root",
-            str(self._backup_root),
-            "--backup-archive-name",
-            backup_archive_name,
-            "--state-file",
-            str(self._state_file),
-            "--archive-url",
-            archive_url,
-            "--current-build-label",
-            local.build_label,
-            "--current-version",
-            local.version,
-            "--target-build-label",
-            str(target["build_label"]),
-            "--target-version",
-            str(target["version"]),
-            "--bind-host",
-            bind_host,
-            "--port",
-            str(port),
-            "--parent-pid",
-            str(os.getpid()),
-        ]
-
-        creationflags = 0
-        for flag_name in ("CREATE_NEW_PROCESS_GROUP", "DETACHED_PROCESS"):
-            creationflags |= int(getattr(subprocess, flag_name, 0))
-
-        try:
-            subprocess.Popen(
-                command,
-                cwd=self._repo_root,
-                creationflags=creationflags,
-                close_fds=True,
-                start_new_session=os.name != "nt",
-            )
-        except OSError as exc:
-            raise UpdateApplyError(f"Unable to launch updater: {exc}") from exc
+        command = self._build_update_command(
+            update_script=update_script,
+            backup_archive_name=backup_archive_name,
+            rollback_archive=None,
+            current_build_label=local.build_label,
+            current_version=local.version,
+            target_build_label=str(target["build_label"]),
+            target_version=str(target["version"]),
+            bind_host=bind_host,
+            port=port,
+        )
+        self._launch_updater(command, error_label="updater")
 
         self._update_state(
             last_action={
@@ -192,49 +160,18 @@ class UpdateManager:
         current = self._local_build()
         rollback_script = self._stage_update_script()
         safety_backup_archive_name = self._build_backup_archive_name(current, prefix="pre-rollback")
-        command = [
-            self._python_launcher(),
-            str(rollback_script),
-            "--repo-root",
-            str(self._repo_root),
-            "--backup-root",
-            str(self._backup_root),
-            "--backup-archive-name",
-            safety_backup_archive_name,
-            "--state-file",
-            str(self._state_file),
-            "--rollback-archive",
-            str(rollback_archive),
-            "--current-build-label",
-            current.build_label,
-            "--current-version",
-            current.version,
-            "--target-build-label",
-            str(backup.source_build_label or "Rollback backup"),
-            "--target-version",
-            str(backup.source_version or "unknown"),
-            "--bind-host",
-            bind_host,
-            "--port",
-            str(port),
-            "--parent-pid",
-            str(os.getpid()),
-        ]
-
-        creationflags = 0
-        for flag_name in ("CREATE_NEW_PROCESS_GROUP", "DETACHED_PROCESS"):
-            creationflags |= int(getattr(subprocess, flag_name, 0))
-
-        try:
-            subprocess.Popen(
-                command,
-                cwd=self._repo_root,
-                creationflags=creationflags,
-                close_fds=True,
-                start_new_session=os.name != "nt",
-            )
-        except OSError as exc:
-            raise UpdateApplyError(f"Unable to launch rollback: {exc}") from exc
+        command = self._build_update_command(
+            update_script=rollback_script,
+            backup_archive_name=safety_backup_archive_name,
+            rollback_archive=rollback_archive,
+            current_build_label=current.build_label,
+            current_version=current.version,
+            target_build_label=str(backup.source_build_label or "Rollback backup"),
+            target_version=str(backup.source_version or "unknown"),
+            bind_host=bind_host,
+            port=port,
+        )
+        self._launch_updater(command, error_label="rollback")
 
         self._update_state(
             last_action={
@@ -290,6 +227,71 @@ class UpdateManager:
         staged_path = Path(tempfile.gettempdir()) / f"omnibot-update-{uuid4().hex}.py"
         shutil.copy2(source_script, staged_path)
         return staged_path
+
+    def _build_update_command(
+        self,
+        *,
+        update_script: Path,
+        backup_archive_name: str,
+        rollback_archive: Path | None,
+        current_build_label: str,
+        current_version: str,
+        target_build_label: str,
+        target_version: str,
+        bind_host: str,
+        port: int,
+    ) -> list[str]:
+        command = [
+            self._python_launcher(),
+            str(update_script),
+            "--repo-root",
+            str(self._repo_root),
+            "--backup-root",
+            str(self._backup_root),
+            "--backup-archive-name",
+            backup_archive_name,
+            "--state-file",
+            str(self._state_file),
+            "--current-build-label",
+            current_build_label,
+            "--current-version",
+            current_version,
+            "--target-build-label",
+            target_build_label,
+            "--target-version",
+            target_version,
+            "--bind-host",
+            bind_host,
+            "--port",
+            str(port),
+            "--parent-pid",
+            str(os.getpid()),
+            "--service-name",
+            self._config.systemd_service_name,
+            "--install-extras",
+            self._config.update_install_extras,
+        ]
+        if rollback_archive is not None:
+            command.extend(("--rollback-archive", str(rollback_archive)))
+        else:
+            command.extend(("--archive-url", self._archive_url()))
+        return command
+
+    def _launch_updater(self, command: list[str], *, error_label: str) -> None:
+        creationflags = 0
+        for flag_name in ("CREATE_NEW_PROCESS_GROUP", "DETACHED_PROCESS"):
+            creationflags |= int(getattr(subprocess, flag_name, 0))
+
+        try:
+            subprocess.Popen(
+                command,
+                cwd=self._repo_root,
+                creationflags=creationflags,
+                close_fds=True,
+                start_new_session=os.name != "nt",
+            )
+        except OSError as exc:
+            raise UpdateApplyError(f"Unable to launch {error_label}: {exc}") from exc
 
     @staticmethod
     def _python_launcher() -> str:
@@ -357,12 +359,16 @@ class UpdateManager:
         return f"{prefix}-{sanitized_label}-{timestamp}.zip"
 
     def _metadata_url(self) -> str:
+        if self._config.update_metadata_url:
+            return self._config.update_metadata_url
         return (
             f"https://raw.githubusercontent.com/{self._config.update_repo}/"
             f"{self._config.update_branch}/src/omnibot_v3/__init__.py"
         )
 
     def _archive_url(self) -> str:
+        if self._config.update_archive_url:
+            return self._config.update_archive_url
         return (
             f"https://github.com/{self._config.update_repo}/archive/refs/heads/"
             f"{self._config.update_branch}.zip"
