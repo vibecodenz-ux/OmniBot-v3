@@ -35,6 +35,39 @@ fail() {
   exit 1
 }
 
+ensure_env_setting() {
+  local file_path="$1"
+  local key="$2"
+  local value="$3"
+
+  if grep -q "^${key}=" "$file_path"; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "$file_path"
+  else
+    printf '\n%s=%s\n' "$key" "$value" >>"$file_path"
+  fi
+}
+
+read_env_setting() {
+  local file_path="$1"
+  local key="$2"
+  local value
+
+  value="$(grep "^${key}=" "$file_path" | tail -n 1 | cut -d '=' -f 2- || true)"
+  value="${value//$'\r'/}"
+  printf '%s' "$value"
+}
+
+detect_network_address() {
+  local address=""
+
+  address="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  if [[ -z "$address" ]] && command -v ip >/dev/null 2>&1; then
+    address="$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for (i = 1; i <= NF; i++) if ($i == "src") {print $(i + 1); exit}}' || true)"
+  fi
+
+  printf '%s' "$address"
+}
+
 if [[ "$(uname -s)" != "Linux" ]]; then
   fail "this helper is intended for Debian or Ubuntu on Linux"
 fi
@@ -70,6 +103,14 @@ fi
 if [[ ! -f "$REPO_ROOT/.env" && -f "$REPO_ROOT/.env.example" ]]; then
   cp "$REPO_ROOT/.env.example" "$REPO_ROOT/.env"
   info "created .env from .env.example"
+fi
+
+if [[ -f "$REPO_ROOT/.env" ]]; then
+  current_bind_host="$(read_env_setting "$REPO_ROOT/.env" "OMNIBOT_BIND_HOST")"
+  if [[ -z "$current_bind_host" || "$current_bind_host" == "127.0.0.1" ]]; then
+    ensure_env_setting "$REPO_ROOT/.env" "OMNIBOT_BIND_HOST" "0.0.0.0"
+    info "configured OMNIBOT_BIND_HOST=0.0.0.0 for LAN access"
+  fi
 fi
 
 info "creating the local virtual environment and installing .[$EXTRAS]"
@@ -126,26 +167,22 @@ PY
   sleep 2
 done
 
-bind_host="$(grep '^OMNIBOT_BIND_HOST=' "$REPO_ROOT/.env" | tail -n 1 | cut -d '=' -f 2- || true)"
-port="$(grep '^OMNIBOT_PORT=' "$REPO_ROOT/.env" | tail -n 1 | cut -d '=' -f 2- || true)"
+bind_host="$(read_env_setting "$REPO_ROOT/.env" "OMNIBOT_BIND_HOST")"
+port="$(read_env_setting "$REPO_ROOT/.env" "OMNIBOT_PORT")"
 bind_host="${bind_host:-127.0.0.1}"
 port="${port:-8000}"
 
 if [[ "$bind_host" == "0.0.0.0" ]]; then
   info "local URL: http://127.0.0.1:$port/"
-  addresses="$(hostname -I 2>/dev/null || true)"
-  first_address="$(printf '%s\n' "$addresses" | awk '{print $1}')"
-  if [[ -n "$first_address" ]]; then
-    info "network URL: http://$first_address:$port/"
+  network_address="$(detect_network_address)"
+  if [[ -n "$network_address" ]]; then
+    info "network URL: http://$network_address:$port/"
   fi
 else
   info "dashboard URL: http://$bind_host:$port/"
 fi
 
 info "local dashboard bootstrap complete"
-if [[ "$bind_host" == "127.0.0.1" ]]; then
-  info "LAN access is disabled by default; to expose the dashboard on your network, set OMNIBOT_BIND_HOST=0.0.0.0 in /etc/omnibot/${SERVICE_NAME}.env and restart the service"
-fi
 info "systemd service $SERVICE_NAME is enabled and will start automatically after reboot"
 info "manual foreground run remains available via: bash scripts/run_dashboard.sh"
 info "default development login: admin / admin"

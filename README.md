@@ -55,18 +55,11 @@ What `bootstrap_debian.sh` does for you:
 What you should see after install:
 
 - a local URL: `http://127.0.0.1:8000/`
-- if you later change `OMNIBOT_BIND_HOST=0.0.0.0` in `.env`, the script output may also print a LAN URL
+- on a fresh install, the script should also print a LAN URL when the machine has a network address
 
-By default, the service only listens on `127.0.0.1`, so another computer on your network cannot reach it yet.
+The Debian bootstrap now sets the service bind host to `0.0.0.0` on fresh installs, so another computer on the same network can reach the dashboard without extra config.
 
-To allow LAN access on a real Linux machine:
-
-```bash
-sudo sed -i 's/^OMNIBOT_BIND_HOST=.*/OMNIBOT_BIND_HOST=0.0.0.0/' /etc/omnibot/omnibot-v3.env
-sudo systemctl restart omnibot-v3
-```
-
-Then open `http://<your-linux-machine-ip>:8000/` from the other computer.
+From another computer on the same network, open `http://<your-linux-machine-ip>:8000/`.
 
 If your Linux firewall is enabled, also allow TCP port `8000` with your distro's firewall tool.
 
