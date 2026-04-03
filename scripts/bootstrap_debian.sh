@@ -107,10 +107,14 @@ info "installing systemd service and environment file"
 info "waiting for the dashboard to answer on localhost"
 for attempt in {1..30}; do
   if "$REPO_ROOT/.venv/bin/python" - <<'PY'
+import contextlib
 import urllib.request
 
-with urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5) as response:
-    raise SystemExit(0 if response.status == 200 else 1)
+with contextlib.suppress(Exception):
+    with urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5) as response:
+        raise SystemExit(0 if response.status == 200 else 1)
+
+raise SystemExit(1)
 PY
   then
     break
