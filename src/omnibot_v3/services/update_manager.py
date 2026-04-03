@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -115,34 +117,32 @@ class UpdateManager:
         archive_url = self._archive_url()
         backup_archive_name = self._build_backup_archive_name(local)
         command = [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
+            self._python_launcher(),
             str(update_script),
-            "-RepoRoot",
+            "--repo-root",
             str(self._repo_root),
-            "-BackupRoot",
+            "--backup-root",
             str(self._backup_root),
-            "-BackupArchiveName",
+            "--backup-archive-name",
             backup_archive_name,
-            "-StateFile",
+            "--state-file",
             str(self._state_file),
-            "-ArchiveUrl",
+            "--archive-url",
             archive_url,
-            "-CurrentBuildLabel",
+            "--current-build-label",
             local.build_label,
-            "-CurrentVersion",
+            "--current-version",
             local.version,
-            "-TargetBuildLabel",
+            "--target-build-label",
             str(target["build_label"]),
-            "-TargetVersion",
+            "--target-version",
             str(target["version"]),
-            "-BindHost",
+            "--bind-host",
             bind_host,
-            "-Port",
+            "--port",
             str(port),
+            "--parent-pid",
+            str(os.getpid()),
         ]
 
         creationflags = 0
@@ -155,6 +155,7 @@ class UpdateManager:
                 cwd=self._repo_root,
                 creationflags=creationflags,
                 close_fds=True,
+                start_new_session=os.name != "nt",
             )
         except OSError as exc:
             raise UpdateApplyError(f"Unable to launch updater: {exc}") from exc
@@ -192,34 +193,32 @@ class UpdateManager:
         rollback_script = self._stage_update_script()
         safety_backup_archive_name = self._build_backup_archive_name(current, prefix="pre-rollback")
         command = [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
+            self._python_launcher(),
             str(rollback_script),
-            "-RepoRoot",
+            "--repo-root",
             str(self._repo_root),
-            "-BackupRoot",
+            "--backup-root",
             str(self._backup_root),
-            "-BackupArchiveName",
+            "--backup-archive-name",
             safety_backup_archive_name,
-            "-StateFile",
+            "--state-file",
             str(self._state_file),
-            "-RollbackArchive",
+            "--rollback-archive",
             str(rollback_archive),
-            "-CurrentBuildLabel",
+            "--current-build-label",
             current.build_label,
-            "-CurrentVersion",
+            "--current-version",
             current.version,
-            "-TargetBuildLabel",
+            "--target-build-label",
             str(backup.source_build_label or "Rollback backup"),
-            "-TargetVersion",
+            "--target-version",
             str(backup.source_version or "unknown"),
-            "-BindHost",
+            "--bind-host",
             bind_host,
-            "-Port",
+            "--port",
             str(port),
+            "--parent-pid",
+            str(os.getpid()),
         ]
 
         creationflags = 0
@@ -232,6 +231,7 @@ class UpdateManager:
                 cwd=self._repo_root,
                 creationflags=creationflags,
                 close_fds=True,
+                start_new_session=os.name != "nt",
             )
         except OSError as exc:
             raise UpdateApplyError(f"Unable to launch rollback: {exc}") from exc
@@ -283,13 +283,19 @@ class UpdateManager:
         )
 
     def _stage_update_script(self) -> Path:
-        source_script = self._repo_root / "scripts" / "update_from_github.ps1"
+        source_script = self._repo_root / "scripts" / "update_from_github.py"
         if not source_script.exists():
-            raise UpdateApplyError("Updater script is missing from scripts/update_from_github.ps1.")
+            raise UpdateApplyError("Updater script is missing from scripts/update_from_github.py.")
 
-        staged_path = Path(tempfile.gettempdir()) / f"omnibot-update-{uuid4().hex}.ps1"
+        staged_path = Path(tempfile.gettempdir()) / f"omnibot-update-{uuid4().hex}.py"
         shutil.copy2(source_script, staged_path)
         return staged_path
+
+    @staticmethod
+    def _python_launcher() -> str:
+        if sys.executable:
+            return sys.executable
+        raise UpdateApplyError("Unable to determine the current Python executable for the updater.")
 
     def _read_state(self) -> dict[str, object]:
         if not self._state_file.exists():
