@@ -176,6 +176,25 @@ def downloaded_source_root(extract_root: Path) -> Path:
     raise RuntimeError("Downloaded update archive did not contain a repository root.")
 
 
+def running_inside_systemd_service(service_name: str) -> bool:
+    if os.name == "nt":
+        return False
+
+    if any(os.environ.get(name) for name in ("INVOCATION_ID", "JOURNAL_STREAM", "SYSTEMD_EXEC_PID")):
+        return True
+
+    cgroup_path = Path("/proc/self/cgroup")
+    if not cgroup_path.exists():
+        return False
+
+    try:
+        cgroup_content = cgroup_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    return f"{service_name}.service" in cgroup_content
+
+
 def systemd_service_active(service_name: str) -> bool:
     if os.name == "nt" or shutil.which("systemctl") is None:
         return False
@@ -254,7 +273,7 @@ def main() -> int:
     if is_update and not args.archive_url:
         raise RuntimeError("Archive URL is required for update mode.")
 
-    systemd_managed = systemd_service_active(SYSTEMD_SERVICE_NAME)
+    systemd_managed = running_inside_systemd_service(SYSTEMD_SERVICE_NAME) or systemd_service_active(SYSTEMD_SERVICE_NAME)
 
     try:
         write_update_state(
