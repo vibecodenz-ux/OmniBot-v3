@@ -273,6 +273,46 @@ def install_target(source_root: Path, install_extras: str) -> str:
     return f"{source_root}[{install_extras}]"
 
 
+def frontend_build_ready(source_root: Path) -> bool:
+    dist_root = source_root / "frontend" / "dist"
+    assets_root = dist_root / "assets"
+    return dist_root.exists() and assets_root.exists()
+
+
+def ensure_frontend_runtime_assets(source_root: Path, repo_root: Path) -> None:
+    if frontend_build_ready(source_root):
+        return
+
+    python_path = repo_python_executable(repo_root)
+    if not python_path.exists():
+        raise RuntimeError(f"Virtual environment is missing: {python_path}")
+
+    build_script = source_root / "scripts" / "ensure_frontend_build.py"
+    if not build_script.exists():
+        raise RuntimeError(
+            "Missing frontend build output under frontend/dist and scripts/ensure_frontend_build.py "
+            "is not available to rebuild it."
+        )
+
+    completed = subprocess.run(
+        [str(python_path), str(build_script)],
+        cwd=source_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        stdout = completed.stdout.strip()
+        stderr = completed.stderr.strip()
+        details = "\n".join(part for part in (stdout, stderr) if part)
+        raise RuntimeError(f"Frontend build failed during staged update.\n{details}".strip())
+
+    if not frontend_build_ready(source_root):
+        raise RuntimeError(
+            "Frontend build completed but frontend/dist is still missing required assets."
+        )
+
+
 def sync_runtime_environment(source_root: Path, repo_root: Path, install_extras: str) -> None:
     python_path = repo_python_executable(repo_root)
     if not python_path.exists():
@@ -521,7 +561,7 @@ def main() -> int:
                 target_build_label=args.target_build_label,
                 backup_archive_name=created_backup_name,
                 rollback_archive_name=rollback_archive_name,
-                message="Validating staged build metadata and syncing dependencies.",
+                message="Validating staged build metadata, syncing dependencies, and preparing frontend assets.",
                 stage="validate",
                 work_root=work_root,
             ),
@@ -533,6 +573,7 @@ def main() -> int:
         )
         stage_source_tree(source_root, staged_root)
         sync_runtime_environment(staged_root, repo_root, args.install_extras)
+        ensure_frontend_runtime_assets(staged_root, repo_root)
 
         write_update_state(
             state_file,
