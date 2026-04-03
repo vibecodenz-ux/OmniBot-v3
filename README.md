@@ -76,6 +76,13 @@ If you already installed the Debian system packages yourself, use:
 bash scripts/bootstrap_debian.sh --skip-system-packages
 ```
 
+If update fails, run:
+
+```bash
+git pull
+sudo systemctl restart omnibot-v3
+```
+
 Useful follow-up commands:
 
 ```bash
