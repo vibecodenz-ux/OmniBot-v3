@@ -4,10 +4,7 @@ OmniBot v3 is a Linux-first, single-host-first trading dashboard for stocks, cry
 
 ## Quick Start On Debian 13
 
-This package is prepared for Debian 13 on either:
-
-- a normal Linux machine
-- Debian under WSL2 with systemd enabled
+This package is prepared for Debian 13.
 
 Run OmniBot as a normal Linux user. If that user already has `sudo` and `git`, skip to the clone section.
 
@@ -42,8 +39,6 @@ git clone https://github.com/vibecodenz-ux/OmniBot-v3.git OmniBot-v3
 cd OmniBot-v3
 bash scripts/bootstrap_debian.sh
 ```
-
-If you are testing in WSL, clone into a Linux-native path such as `~/OmniBot-v3`, not a Windows-mounted path under `/mnt/c/...`.
 
 What `bootstrap_debian.sh` does for you:
 
@@ -105,15 +100,6 @@ The dashboard currently includes:
 - a trade journal
 - a Settings page with broker credential management
 - build display plus GitHub update, backup, and rollback controls
-
-## WSL Note
-
-For WSL rehearsal on Windows:
-
-- use Debian 13 or another current Debian/Ubuntu distro with systemd enabled
-- clone into your Linux home directory
-- access the dashboard locally at `http://127.0.0.1:8000/`
-- if you need LAN access from Windows or another PC, use `scripts/publish_wsl_dashboard.ps1` from Windows PowerShell
 
 ## Environment
 
