@@ -143,6 +143,9 @@ else
 fi
 
 info "local dashboard bootstrap complete"
+if [[ "$bind_host" == "127.0.0.1" ]]; then
+  info "LAN access is disabled by default; to expose the dashboard on your network, set OMNIBOT_BIND_HOST=0.0.0.0 in /etc/omnibot/${SERVICE_NAME}.env and restart the service"
+fi
 info "systemd service $SERVICE_NAME is enabled and will start automatically after reboot"
 info "manual foreground run remains available via: bash scripts/run_dashboard.sh"
 info "default development login: admin / admin"
