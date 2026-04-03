@@ -46,7 +46,7 @@ interface SettingsControlSurfaceProps {
 }
 
 const FALLBACK_BUILD_INFO: BuildInfo = {
-  version: "0.1.0",
+  version: "3",
   build_number: "---",
   build_label: "Build:---",
   update_source: {
