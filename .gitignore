@@ -12,7 +12,6 @@ dist/
 build/
 .tools/node/
 frontend/node_modules/
-frontend/dist/
 *.egg-info/
 .env
 .env.*
