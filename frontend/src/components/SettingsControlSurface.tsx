@@ -138,6 +138,8 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
   const secretsById = useMemo(() => new Map(secretList.map((secret) => [secret.secret_id, secret])), [secretList]);
   const resolvedBuild = build || FALLBACK_BUILD_INFO;
 
+  const [runtimeExpanded, setRuntimeExpanded] = useState(true);
+  const [authExpanded, setAuthExpanded] = useState(true);
   const [runtimeForm, setRuntimeForm] = useState<RuntimeSettingsPayload>(() => sanitizeRuntime(settings));
   const [authForm, setAuthForm] = useState<AuthSettingsPayload>(() => sanitizeAuth(settings));
   const [passwordForm, setPasswordForm] = useState({ current: "", next: "", confirm: "" });
@@ -377,8 +379,18 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
               <p className="panel-eyebrow">Settings</p>
               <h2>App settings</h2>
             </div>
+            <div className="panel-actions">
+              <button
+                type="button"
+                className="utility-button"
+                aria-expanded={runtimeExpanded}
+                onClick={() => setRuntimeExpanded((current) => !current)}
+              >
+                {runtimeExpanded ? "Collapse" : "Expand"}
+              </button>
+            </div>
           </header>
-          <div className="panel-body settings-form-stack">
+          <div className="panel-body settings-form-stack" hidden={!runtimeExpanded}>
             <div className="settings-form-grid">
               <label className="settings-field">
                 <span>Log detail</span>
@@ -434,8 +446,18 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
               <p className="panel-eyebrow">Security</p>
               <h2>Sign-in and session</h2>
             </div>
+            <div className="panel-actions">
+              <button
+                type="button"
+                className="utility-button"
+                aria-expanded={authExpanded}
+                onClick={() => setAuthExpanded((current) => !current)}
+              >
+                {authExpanded ? "Collapse" : "Expand"}
+              </button>
+            </div>
           </header>
-          <div className="panel-body settings-form-stack">
+          <div className="panel-body settings-form-stack" hidden={!authExpanded}>
             <div className="settings-form-grid">
               <label className="settings-field settings-field-readonly">
                 <span>Username</span>
