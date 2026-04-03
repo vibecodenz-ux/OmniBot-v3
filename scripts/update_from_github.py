@@ -89,6 +89,15 @@ def stop_dashboard_process(parent_pid: int) -> None:
         os.kill(parent_pid, kill_signal)
 
 
+def fail_dashboard_process(parent_pid: int) -> None:
+    if parent_pid <= 0 or parent_pid == os.getpid():
+        return
+
+    kill_signal = signal.SIGKILL if hasattr(signal, "SIGKILL") else signal.SIGTERM
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.kill(parent_pid, kill_signal)
+
+
 def copy_repository_children(source_root: Path, destination_root: Path, exclude_names: set[str] | frozenset[str]) -> None:
     for child in source_root.iterdir():
         if child.name in exclude_names:
@@ -263,7 +272,8 @@ def main() -> int:
         )
 
         time.sleep(2)
-        stop_dashboard_process(args.parent_pid)
+        if not systemd_managed:
+            stop_dashboard_process(args.parent_pid)
 
         created_backup = new_code_backup(
             source_root=repo_root,
@@ -301,6 +311,10 @@ def main() -> int:
                 "message": "Rollback completed and OmniBot is restarting." if is_rollback else "Update completed and OmniBot is restarting.",
             },
         )
+
+        if systemd_managed:
+            fail_dashboard_process(args.parent_pid)
+            return 0
 
         restart_dashboard(repo_root, bind_host=args.bind_host, port=args.port, systemd_managed=systemd_managed)
         return 0
