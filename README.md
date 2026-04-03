@@ -25,7 +25,9 @@ apt-get install -y sudo git
 usermod -aG sudo <your-username>
 ```
 
-Leave the root shell, sign back in as your normal user, and verify the setup:
+Leave the root shell, fully log out of the Linux session, then sign back in as your normal user so the new `sudo` group membership applies. In WSL, close the shell after `exit` and open a new one before continuing.
+
+Then verify the setup:
 
 ```bash
 exit
