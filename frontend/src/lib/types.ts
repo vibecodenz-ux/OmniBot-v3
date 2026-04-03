@@ -278,6 +278,7 @@ export interface StrategyActivityPositionOverlay {
 
 export interface StrategyActivityMarketSummary {
   market: string;
+  label?: string | null;
   warmup_status?: string | null;
   last_scan_at?: string | null;
   last_decision?: string | null;

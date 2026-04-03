@@ -936,6 +936,7 @@ class StrategyScannerService:
             ]
         return {
             "market": market.value,
+            "label": _market_display_label(market),
             "warmup_status": activity.warmup_status,
             "last_scan_at": activity.last_scan_at.isoformat() if activity.last_scan_at else None,
             "last_decision": activity.last_decision,
@@ -1462,6 +1463,14 @@ def _recommended_quote_ttl_seconds(worker: MarketWorker) -> int:
     if adapter_name == "binance":
         return 12
     return 8
+
+
+def _market_display_label(market: Market) -> str:
+    return {
+        Market.STOCKS: "Stocks - Alpaca",
+        Market.CRYPTO: "Crypto - Binance",
+        Market.FOREX: "Forex - IG Forex AU",
+    }.get(market, market.value.title())
 
 
 def _bar_bucket_start(observed_at: datetime, timeframe: BarTimeframe) -> datetime:

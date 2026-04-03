@@ -283,7 +283,7 @@ function MarketScannerCard({ summary, themeMode }: { summary: StrategyActivityMa
   return (
     <article className="series-card">
       <div className="stack-card-top">
-        <strong>{titleCase(summary.market)}</strong>
+        <strong>{summary.label || titleCase(summary.market)}</strong>
         <StatusBadge label={summary.warmup_status || "unknown"} tone={toneFromLevel(summary.warmup_status || "warning")} />
       </div>
       <p>{summary.last_decision || "No recent activity yet."}</p>
@@ -307,7 +307,7 @@ function MarketScannerCard({ summary, themeMode }: { summary: StrategyActivityMa
       ) : (
         <div className="sparkline-empty">No historical candles yet.</div>
       )}
-      <div className="ranking-list" aria-label={`${summary.market} rankings`}>
+      <div className="ranking-list" aria-label={`${summary.label || summary.market} rankings`}>
         {rankedSymbols.length === 0 ? <span className="empty-copy">No ranked symbols yet.</span> : null}
         {rankedSymbols.map((item) => (
           <div key={item.symbol} className="ranking-row">

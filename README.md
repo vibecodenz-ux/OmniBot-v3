@@ -2,6 +2,8 @@
 
 OmniBot v3 is a Linux-first, single-host-first trading dashboard for stocks, crypto, and forex.
 
+Current operator-facing release: Version 3, Build 004.
+
 ## Quick Start On Debian 13
 
 This package is prepared for Debian 13.

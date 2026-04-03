@@ -1,6 +1,8 @@
 import { Activity, Bot, BriefcaseBusiness, LayoutDashboard, LogOut, Moon, Settings, Sun } from "lucide-react";
 import type { ViewId } from "../lib/types";
 
+const SIDEBAR_VERSION_LABEL = "Version 3";
+
 const NAV_ITEMS: Array<{ id: ViewId; label: string; icon: typeof LayoutDashboard }> = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "bots", label: "Bots", icon: Bot },
@@ -24,6 +26,7 @@ interface SidebarProps {
 export function Sidebar({ activeView, operatorName, overallState, buildLabel, buildVersion, themeMode, onNavigate, onToggleTheme, onLogout }: SidebarProps) {
   const ThemeIcon = themeMode === "dark" ? Sun : Moon;
   const nextThemeLabel = themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode";
+  void buildVersion;
 
   return (
     <aside className="app-sidebar">
@@ -56,8 +59,8 @@ export function Sidebar({ activeView, operatorName, overallState, buildLabel, bu
           <strong>{overallState}</strong>
           <small>Signed in as {operatorName}</small>
           <div className="sidebar-build">
-            <strong>{buildLabel}</strong>
-            <small>Version {buildVersion}</small>
+            <strong>{SIDEBAR_VERSION_LABEL}</strong>
+            <small>{buildLabel}</small>
           </div>
         </div>
         <div className="sidebar-footer-actions">
