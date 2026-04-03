@@ -61,6 +61,8 @@ The Debian bootstrap now sets the service bind host to `0.0.0.0` on fresh instal
 
 From another computer on the same network, open `http://<your-linux-machine-ip>:8000/`.
 
+If you rerun setup inside an older clone created before this change, delete `.env` first or update `OMNIBOT_BIND_HOST` there so the rerun picks up the LAN-capable default.
+
 If your Linux firewall is enabled, also allow TCP port `8000` with your distro's firewall tool.
 
 Default login:
