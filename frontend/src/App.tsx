@@ -32,11 +32,11 @@ const FALLBACK_BUILD_INFO = {
 };
 
 const VIEW_COPY: Record<ViewId, { title: string; description: string }> = {
-  dashboard: { title: "Dashboard", description: "Capital and runtime." },
-  bots: { title: "Bots", description: "Markets and control." },
-  analytics: { title: "Analytics", description: "Performance and events." },
+  dashboard: { title: "Dashboard", description: "Account summary and activity." },
+  bots: { title: "Bots", description: "Manage each market." },
+  analytics: { title: "Analytics", description: "Performance, charts, and activity." },
   accounts: { title: "Journal", description: "Live positions and trade history." },
-  settings: { title: "Settings", description: "Policy and access." },
+  settings: { title: "Settings", description: "Preferences, security, and updates." },
 };
 
 interface JournalTableRow {
@@ -103,10 +103,10 @@ function OverviewMetrics({ bundle }: { bundle: DashboardBundle }) {
   const attentionCount = bundle.health.market_reports?.filter((report) => !report.ready).length || 0;
 
   const items = [
-    { label: "Live Markets", value: `${runningMarkets}/${marketCount || 0}`, detail: attentionCount === 0 ? "Ready" : `${attentionCount} attention`, icon: Activity },
+    { label: "Active Markets", value: `${runningMarkets}/${marketCount || 0}`, detail: attentionCount === 0 ? "Ready" : `${attentionCount} need attention`, icon: Activity },
     { label: "Portfolio Value", value: formatMoney(bundle.portfolio.total_portfolio_value), detail: `${bundle.portfolio.snapshot_count || 0} snapshots`, icon: Briefcase },
     { label: "Open Exposure", value: formatMoney(bundle.portfolio.total_market_value), detail: `${bundle.journal.totals?.open_position_count || 0} open`, icon: BarChart3 },
-    { label: "Runtime Posture", value: titleCase(bundle.runtime.state), detail: titleCase(bundle.ui_state.overall_state || "unknown"), icon: ShieldCheck },
+    { label: "System Status", value: titleCase(bundle.runtime.state), detail: titleCase(bundle.ui_state.overall_state || "unknown"), icon: ShieldCheck },
   ];
 
   return (
@@ -169,8 +169,8 @@ function WidgetStrip({ bundle }: { bundle: DashboardBundle }) {
           <div className="signal-banner-top">
             <StatusBadge label={banner.level || "status"} tone={toneFromLevel(banner.level)} />
           </div>
-          <strong>{banner.title || "Runtime status"}</strong>
-          <p>{banner.message || "No banner message provided."}</p>
+          <strong>{banner.title || "Status update"}</strong>
+          <p>{banner.message || "No status message available."}</p>
         </article>
       ) : null}
 
@@ -286,7 +286,7 @@ function MarketScannerCard({ summary, themeMode }: { summary: StrategyActivityMa
         <strong>{titleCase(summary.market)}</strong>
         <StatusBadge label={summary.warmup_status || "unknown"} tone={toneFromLevel(summary.warmup_status || "warning")} />
       </div>
-      <p>{summary.last_decision || "No scanner decision recorded yet."}</p>
+      <p>{summary.last_decision || "No recent activity yet."}</p>
       <div className="series-toolbar">
         <label className="series-select-label">
           <span>Symbol</span>
@@ -373,8 +373,8 @@ function normalizeFeedItems(items: unknown[] | undefined): Array<{ title: string
 
     if (actorId || outcome || mechanism) {
       return {
-        title: `${actorId || "Operator"} ${titleCase(outcome || "event")}`,
-        subtitle: `${titleCase(mechanism || "session")} access event`,
+        title: `${actorId || "User"} ${titleCase(outcome || "event")}`,
+        subtitle: `${titleCase(mechanism || "session")} sign-in activity`,
         meta: [formatTimestamp(occurredAt)].filter((value) => value !== "-"),
       };
     }
@@ -382,7 +382,7 @@ function normalizeFeedItems(items: unknown[] | undefined): Array<{ title: string
     if (market || message || eventType) {
       return {
         title: titleCase(eventType || market || `event ${index + 1}`),
-        subtitle: String(message || market || "Runtime event"),
+        subtitle: String(message || market || "Activity update"),
         meta: Object.entries(event)
           .filter(([key, value]) => !["event_type", "message"].includes(key) && value !== null && value !== undefined && value !== "")
           .slice(0, 3)
@@ -569,8 +569,8 @@ function DashboardContent({
 
   const marketsPanel = (
     <Panel
-      eyebrow="Trading Modules"
-      title="Per-market control"
+      eyebrow="Markets"
+      title="Manage markets"
     >
       <div className="module-list">
         {asArray(bundle.runtime.markets).map((market) => (
@@ -592,7 +592,7 @@ function DashboardContent({
       {commandFeedback ? (
         <div className="command-toast" role="status" aria-live="polite">{commandFeedback}</div>
       ) : null}
-      <Panel eyebrow="Signal" title="Status board">
+      <Panel eyebrow="Status" title="At a glance">
         <WidgetStrip bundle={bundle} />
       </Panel>
       <Panel
@@ -610,7 +610,7 @@ function DashboardContent({
             <article className="stat-card"><span>Buying Power</span><strong>{formatMoney(bundle.portfolio.total_buying_power)}</strong></article>
           </div>
         </Panel>
-        <Panel eyebrow="Health" title="Runtime posture">
+        <Panel eyebrow="System" title="System status">
           <HealthList bundle={bundle} />
         </Panel>
       </div>
@@ -646,7 +646,7 @@ function DashboardContent({
         </div>
       </Panel>
       <Panel
-        eyebrow="Signals"
+        eyebrow="Insights"
         title="Ranked markets"
         className="panel-span-full analytics-signals-panel"
         actions={(
@@ -667,11 +667,11 @@ function DashboardContent({
       <Panel eyebrow="Charts" title="By market">
         <ChartGallery bundle={bundle} />
       </Panel>
-      <Panel eyebrow="Runtime" title="Recent events">
+      <Panel eyebrow="Activity" title="Recent events">
         <FeedList items={normalizeFeedItems(bundle.runtime_audit.events)} />
       </Panel>
       <Panel
-        eyebrow="Scanner"
+        eyebrow="Insights"
         title="Recent decisions"
         className="analytics-decisions-panel panel-span-full"
         bodyClassName={recentDecisionsExpanded ? "panel-body-scrollable" : undefined}
@@ -698,7 +698,7 @@ function DashboardContent({
       {commandFeedback ? (
         <div className="command-toast" role="status" aria-live="polite">{commandFeedback}</div>
       ) : null}
-      <Panel eyebrow="Trading Modules" title="Per-market control">
+      <Panel eyebrow="Markets" title="Manage markets">
         <div className="module-list module-list-bots">
           {asArray(bundle.runtime.markets).map((market) => (
             <MarketModuleCard
@@ -962,7 +962,7 @@ export default function App() {
       <Sidebar
         activeView={activeView}
         operatorName={session.actor_id}
-        overallState={bundle?.ui_state.overall_state || "Awaiting bundle"}
+        overallState={bundle?.ui_state.overall_state || "Loading data"}
         buildLabel={sidebarBuild.build_label}
         buildVersion={sidebarBuild.version}
         themeMode={themeMode}
@@ -977,13 +977,13 @@ export default function App() {
       <main className="app-main">
         <header className="page-header">
           <div>
-            <p className="panel-eyebrow">Workspace</p>
+            <p className="panel-eyebrow">Overview</p>
             <h1>{VIEW_COPY[activeView].title}</h1>
             <p className="page-copy">{VIEW_COPY[activeView].description}</p>
           </div>
         </header>
 
-        {dashboardQuery.isLoading || !bundle ? <div className="boot-screen boot-inline">Loading dashboard bundle...</div> : null}
+        {dashboardQuery.isLoading || !bundle ? <div className="boot-screen boot-inline">Loading dashboard...</div> : null}
         {dashboardQuery.isSuccess && bundle ? (
           <DashboardContent
             view={activeView}

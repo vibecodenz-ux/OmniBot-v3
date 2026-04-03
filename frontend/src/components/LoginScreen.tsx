@@ -13,10 +13,10 @@ export function LoginScreen({ busy, error, onSubmit }: LoginScreenProps) {
   return (
     <main className="login-shell">
       <section className="login-card">
-        <p className="panel-eyebrow">Secure Entry</p>
-        <h1>OmniBot Control Deck</h1>
+        <p className="panel-eyebrow">Sign In</p>
+        <h1>OmniBot Dashboard</h1>
         <p className="login-copy">
-          Sign in to the OmniBot v3 operator dashboard for live markets, analytics, journal activity, and runtime controls.
+          Sign in to access your dashboard, bots, analytics, journal, and settings.
         </p>
         <form
           className="login-form"

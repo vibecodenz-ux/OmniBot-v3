@@ -68,7 +68,11 @@ class LoginAuditService:
         return events
 
     def event_view(self, event: LoginAuditEvent) -> dict[str, object]:
+        title, subtitle = self._event_copy(event)
         return {
+            "title": title,
+            "subtitle": subtitle,
+            "meta": self._event_meta(event),
             "actor_id": event.actor.actor_id,
             "principal": self.secret_policy_service.policy.redacted_value,
             "mechanism": event.mechanism.value,
@@ -87,3 +91,25 @@ class LoginAuditService:
             reason = event.failure_reason or "unknown"
             summary[reason] = summary.get(reason, 0) + 1
         return summary
+
+    def _event_copy(self, event: LoginAuditEvent) -> tuple[str, str]:
+        actor_label = event.actor.actor_id or "User"
+        mechanism_label = event.mechanism.value.replace("_", " ").title()
+        if event.outcome == LoginOutcome.SUCCESS:
+            return (f"{actor_label} signed in", f"{mechanism_label} sign-in successful")
+
+        failure_reason = self._format_failure_reason(event.failure_reason)
+        return (f"{actor_label} sign-in failed", failure_reason or f"{mechanism_label} sign-in failed")
+
+    def _event_meta(self, event: LoginAuditEvent) -> list[str]:
+        meta: list[str] = []
+        if event.context.ip_address:
+            meta.append(f"IP: {event.context.ip_address}")
+        return meta
+
+    def _format_failure_reason(self, failure_reason: str | None) -> str | None:
+        if failure_reason is None:
+            return None
+        if failure_reason == "incorrect username or password":
+            return "Incorrect username or password."
+        return failure_reason[:1].upper() + failure_reason[1:]

@@ -100,9 +100,9 @@ class SessionAuthService:
                 ip_address=ip_address,
                 user_agent=user_agent,
                 request_id=request_id,
-                failure_reason="invalid credentials",
+                failure_reason="incorrect username or password",
             )
-            raise AuthenticationError("invalid credentials")
+            raise AuthenticationError("incorrect username or password")
 
         self.store.delete_all()
         session = AuthenticatedSession(

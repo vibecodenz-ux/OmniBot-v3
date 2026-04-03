@@ -13,6 +13,9 @@ authors = [
 ]
 dependencies = []
 
+[project.urls]
+Documentation = "https://example.invalid/omnibot-v3/docs"
+
 [project.optional-dependencies]
 api = [
   "fastapi>=0.116",
@@ -21,9 +24,59 @@ api = [
 postgres = [
   "psycopg[binary]>=3.2",
 ]
+dev = [
+  "fastapi>=0.116",
+  "httpx>=0.28",
+  "pytest>=8.3",
+  "pytest-cov>=6.0",
+  "ruff>=0.11",
+  "mypy>=1.15",
+  "uvicorn>=0.35",
+]
 
 [project.scripts]
 omnibot-v3 = "omnibot_v3.main:main"
+omnibot-v3-api = "omnibot_v3.api.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["src/omnibot_v3"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = false
+
+[tool.omnibot]
+minimum_python = "3.11"
+primary_test_python = "3.13"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+extend-exclude = [
+  "*-BACKUP-*",
+  "secrets",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
 
 [tool.mypy]
 python_version = "3.11"

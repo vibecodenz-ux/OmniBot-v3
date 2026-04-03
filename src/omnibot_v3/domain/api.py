@@ -887,33 +887,33 @@ def _build_ui_banner_response(
     if runtime.state == "unhealthy":
         return UiBannerResponse(
             level="error",
-            title="Runtime Attention Required",
-            message="At least one market is in an unhealthy or error state.",
+            title="Attention Needed",
+            message="At least one market needs attention before normal activity can continue.",
         )
     if runtime.state == "degraded":
         if _all_not_ready_markets_are_not_started(health):
             return UiBannerResponse(
                 level="warning",
-                title="Runtime Idle",
+                title="Markets Paused",
                 message=(
-                    f"Broker connections are healthy, but {_count_not_ready_markets(health)} market(s) are not started; "
-                    f"{portfolio.snapshot_count} portfolio snapshot(s) and "
-                    f"{analytics.snapshot_count} analytics source snapshot(s) are available."
+                    f"{_count_not_ready_markets(health)} market(s) are not started yet. "
+                    f"{portfolio.snapshot_count} account snapshot(s) and "
+                    f"{analytics.snapshot_count} chart snapshot(s) are available."
                 ),
             )
         return UiBannerResponse(
             level="warning",
-            title="Runtime Degraded",
+            title="Some Markets Need Attention",
             message=(
                 f"{_count_not_ready_markets(health)} market(s) need attention; "
-                f"{portfolio.snapshot_count} portfolio snapshot(s) and "
-                f"{analytics.snapshot_count} analytics source snapshot(s) are available."
+                f"{portfolio.snapshot_count} account snapshot(s) and "
+                f"{analytics.snapshot_count} chart snapshot(s) are available."
             ),
         )
     return UiBannerResponse(
         level="success",
-        title="Runtime Ready",
-        message="All markets are healthy and the dashboard data surface is available.",
+        title="Ready to Go",
+        message="All markets are healthy and the dashboard is up to date.",
     )
 
 
@@ -928,37 +928,37 @@ def _build_ui_market_state_response(
             market=snapshot.market,
             state="error",
             level="error",
-            title="Market Error",
+            title="Needs Attention",
             message=message,
             reasons=reasons or (message,),
-            recommended_actions=("review runtime audit", "reconnect market", "inspect broker health"),
+            recommended_actions=("review recent activity", "reconnect market", "check broker connection"),
         )
     if snapshot.state == "DISCONNECTED":
         return UiMarketStateResponse(
             market=snapshot.market,
             state="idle",
             level="warning",
-            title="Market Not Started",
-            message="Broker connectivity may be healthy, but this market runtime is not started and cannot trade until you press Start.",
-            reasons=reasons or ("market runtime is not started",),
-            recommended_actions=("start market", "validate broker status", "reconcile market"),
+            title="Not Started",
+            message="This market is not started yet. Press Start when you want it to begin monitoring and trading.",
+            reasons=reasons or ("Not started",),
+            recommended_actions=("start market", "check connection", "sync account"),
         )
     if market_health.state != "healthy":
         return UiMarketStateResponse(
             market=snapshot.market,
             state="degraded",
             level="warning",
-            title="Market Degraded",
+            title="Needs Attention",
             message=market_health.reason,
             reasons=reasons,
-            recommended_actions=("review health details", "reconcile market", "inspect runtime audit"),
+            recommended_actions=("review details", "sync account", "check recent activity"),
         )
     return UiMarketStateResponse(
         market=snapshot.market,
         state="ready",
         level="success",
-        title="Market Ready",
-        message="Market is ready for normal dashboard operation.",
+        title="Ready",
+        message="This market is ready.",
         reasons=(market_health.reason,),
         recommended_actions=("monitor market",),
     )
@@ -983,7 +983,7 @@ def _build_ui_widget_state_response(
         state="ready",
         level="success",
         title=title,
-        message="Stored snapshot-backed data is available.",
+        message="Saved account data is available.",
     )
 
 
@@ -991,7 +991,7 @@ def _all_not_ready_markets_are_not_started(health: RuntimeHealthSummaryResponse)
     reports = tuple(report for report in health.market_reports if not report.ready)
     if not reports:
         return False
-    return all(report.reason.strip() == "market runtime is not started" for report in reports)
+    return all(report.reason.strip().lower() == "not started" for report in reports)
 
 
 def _count_not_ready_markets(health: RuntimeHealthSummaryResponse) -> int:

@@ -62,7 +62,7 @@ function summarizeFooterMessage(module: TradingModule | undefined, marketState: 
     return "Connected";
   }
   if (raw.includes("scan")) {
-    return "Scanner active";
+    return "Monitoring";
   }
 
   return (module?.status_message || module?.last_decision || titleCase(marketState)).split(".")[0];
@@ -78,9 +78,9 @@ export function MarketModuleCard({ market, module, pendingCommand, onCommand, on
   const symbols = asArray(module?.symbols);
   const footerMessage = summarizeFooterMessage(module, market.state);
   const hasAttention = toneFromValue(module?.connection_state) === "danger" || toneFromValue(module?.automation_state) === "danger";
-  const scannerDetail = module?.last_decision || module?.status_message || "No scanner decision recorded yet.";
+  const scannerDetail = module?.last_decision || module?.status_message || "No recent activity yet.";
   const scannerMeta = [
-    module?.last_scan_at ? `Scanned ${formatNzTime(module.last_scan_at)}` : null,
+    module?.last_scan_at ? `Checked ${formatNzTime(module.last_scan_at)}` : null,
     module?.last_order_at ? `Last order ${formatNzTime(module.last_order_at)}` : null,
     module?.last_price ? `Price ${module.last_price}` : null,
   ].filter((value): value is string => Boolean(value));
@@ -90,7 +90,7 @@ export function MarketModuleCard({ market, module, pendingCommand, onCommand, on
       <header className="module-card-header">
         <div>
           <h3>{module?.label || titleCase(market.market)}</h3>
-          <p>{module?.module_scope || module?.descriptor || "Market engine"}</p>
+          <p>{module?.module_scope || module?.descriptor || "Market bot"}</p>
         </div>
         <div className="module-card-actions">
           <button type="button" className="utility-button" onClick={() => setCollapsed((value) => !value)}>
@@ -110,8 +110,8 @@ export function MarketModuleCard({ market, module, pendingCommand, onCommand, on
           </div>
 
           <div className="module-inline-meta">
-            <div className="module-inline-stats" aria-label="Module summary stats">
-              <span>Signals {module?.signals_seen ?? 0}</span>
+            <div className="module-inline-stats" aria-label="Market summary">
+              <span>Alerts {module?.signals_seen ?? 0}</span>
               <span>Orders {module?.orders_submitted ?? 0}</span>
               <span>{titleCase(market.state)}</span>
             </div>

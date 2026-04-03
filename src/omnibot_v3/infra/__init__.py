@@ -27,6 +27,18 @@ if TYPE_CHECKING:
         render_linux_install_report,
         render_linux_upgrade_report,
     )
+    from omnibot_v3.infra.linux_validation import (
+        LinuxValidationPhase,
+        LinuxValidationPlan,
+        LinuxValidationReport,
+        LinuxValidationStepResult,
+        build_linux_validation_plan,
+        execute_linux_validation_plan,
+        linux_validation_plan_to_dict,
+        linux_validation_report_to_dict,
+        render_linux_validation_plan,
+        render_linux_validation_report,
+    )
     from omnibot_v3.infra.login_audit import InMemoryLoginAuditStore
     from omnibot_v3.infra.mock_broker import MockBrokerAdapter
     from omnibot_v3.infra.postgres_runtime_store import (
@@ -87,6 +99,10 @@ __all__ = [
     "LinuxInstallConfig",
     "LinuxInstallPlan",
     "LinuxInstallStep",
+    "LinuxValidationPhase",
+    "LinuxValidationPlan",
+    "LinuxValidationReport",
+    "LinuxValidationStepResult",
     "MockBrokerAdapter",
     "PostgresBackupConfig",
     "PostgresRuntimeEventStore",
@@ -106,12 +122,16 @@ __all__ = [
     "build_initial_operational_schema_sql",
     "build_linux_install_plan",
     "build_linux_upgrade_plan",
+    "build_linux_validation_plan",
     "build_runtime_permission_plan",
     "build_runtime_event_archive_schema_sql",
     "build_restore_plan",
     "build_restore_validation_report",
     "build_schema_migration_sql",
     "default_schema_migrations",
+    "execute_linux_validation_plan",
+    "linux_validation_plan_to_dict",
+    "linux_validation_report_to_dict",
     "restore_validation_report_to_dict",
     "GeneratedAsset",
     "SystemdInstallPlan",
@@ -119,6 +139,8 @@ __all__ = [
     "build_systemd_install_plan",
     "render_environment_template",
     "render_linux_install_report",
+    "render_linux_validation_plan",
+    "render_linux_validation_report",
     "render_linux_upgrade_report",
     "render_systemd_service",
     "SystemdVerificationCheck",
@@ -203,6 +225,45 @@ def __getattr__(name: str) -> Any:
             "build_linux_upgrade_plan": build_linux_upgrade_plan,
             "render_linux_install_report": render_linux_install_report,
             "render_linux_upgrade_report": render_linux_upgrade_report,
+        }
+        return exports[name]
+
+    if name in {
+        "LinuxValidationPhase",
+        "LinuxValidationPlan",
+        "LinuxValidationReport",
+        "LinuxValidationStepResult",
+        "build_linux_validation_plan",
+        "execute_linux_validation_plan",
+        "linux_validation_plan_to_dict",
+        "linux_validation_report_to_dict",
+        "render_linux_validation_plan",
+        "render_linux_validation_report",
+    }:
+        from omnibot_v3.infra.linux_validation import (
+            LinuxValidationPhase,
+            LinuxValidationPlan,
+            LinuxValidationReport,
+            LinuxValidationStepResult,
+            build_linux_validation_plan,
+            execute_linux_validation_plan,
+            linux_validation_plan_to_dict,
+            linux_validation_report_to_dict,
+            render_linux_validation_plan,
+            render_linux_validation_report,
+        )
+
+        exports = {
+            "LinuxValidationPhase": LinuxValidationPhase,
+            "LinuxValidationPlan": LinuxValidationPlan,
+            "LinuxValidationReport": LinuxValidationReport,
+            "LinuxValidationStepResult": LinuxValidationStepResult,
+            "build_linux_validation_plan": build_linux_validation_plan,
+            "execute_linux_validation_plan": execute_linux_validation_plan,
+            "linux_validation_plan_to_dict": linux_validation_plan_to_dict,
+            "linux_validation_report_to_dict": linux_validation_report_to_dict,
+            "render_linux_validation_plan": render_linux_validation_plan,
+            "render_linux_validation_report": render_linux_validation_report,
         }
         return exports[name]
 

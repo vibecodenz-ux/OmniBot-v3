@@ -66,7 +66,7 @@ class RuntimeHealthEvaluator:
                 market=market,
                 state=RuntimeHealthState.UNHEALTHY,
                 ready=False,
-                reason="market runtime is in error state",
+                reason="This market has an error.",
             )
 
         if worker_health is not None and worker_health.status == BrokerHealthStatus.UNHEALTHY:
@@ -74,58 +74,60 @@ class RuntimeHealthEvaluator:
                 market=market,
                 state=RuntimeHealthState.UNHEALTHY,
                 ready=False,
-                reason="broker health check reported unhealthy",
+                reason="Broker connection needs attention.",
             )
 
         degraded_reasons: list[str] = []
         if snapshot.state == RuntimeState.DISCONNECTED:
             if worker_health is not None and worker_health.status == BrokerHealthStatus.HEALTHY:
-                degraded_reasons.append("market runtime is not started")
+                degraded_reasons.append("Not started")
             else:
-                degraded_reasons.append("market is disconnected")
+                degraded_reasons.append("Disconnected")
         if snapshot.state in {RuntimeState.CONNECTING, RuntimeState.STOPPING}:
-            degraded_reasons.append(f"market is {snapshot.state.lower()}")
+            degraded_reasons.append(
+                "Starting up" if snapshot.state == RuntimeState.CONNECTING else "Stopping"
+            )
         if snapshot.kill_switch_engaged:
-            degraded_reasons.append("kill switch engaged")
+            degraded_reasons.append("Safety stop is on")
         if snapshot.reconciliation_pending:
-            degraded_reasons.append("reconciliation pending")
+            degraded_reasons.append("Account sync is pending")
         if self._is_stale(snapshot.updated_at, now, self.cadence_policy.max_snapshot_age_seconds):
-            degraded_reasons.append("runtime snapshot is stale")
+            degraded_reasons.append("Status is out of date")
         if worker_status is None:
-            degraded_reasons.append("worker status unavailable")
+            degraded_reasons.append("Status is unavailable")
         else:
             if worker_status.last_validated_at is None:
-                degraded_reasons.append("worker has not been validated")
+                degraded_reasons.append("Setup has not been checked")
             elif self._is_stale(
                 worker_status.last_validated_at,
                 now,
                 self.cadence_policy.max_worker_validation_age_seconds,
             ):
-                degraded_reasons.append("worker validation is stale")
+                degraded_reasons.append("Setup check is out of date")
             if worker_status.last_health_check_at is None:
-                degraded_reasons.append("worker health has not been checked")
+                degraded_reasons.append("Connection has not been checked")
             elif self._is_stale(
                 worker_status.last_health_check_at,
                 now,
                 self.cadence_policy.max_worker_health_age_seconds,
             ):
-                degraded_reasons.append("worker health check is stale")
+                degraded_reasons.append("Connection check is out of date")
             if worker_status.last_reconciled_at is None:
-                degraded_reasons.append("worker portfolio has not been reconciled")
+                degraded_reasons.append("Account data has not been synced")
             elif self._is_stale(
                 worker_status.last_reconciled_at,
                 now,
                 self.cadence_policy.max_worker_reconciliation_age_seconds,
             ):
-                degraded_reasons.append("worker portfolio reconciliation is stale")
+                degraded_reasons.append("Account data sync is out of date")
         if worker_health is not None and worker_health.status == BrokerHealthStatus.DEGRADED:
-            degraded_reasons.append("broker health check reported degraded")
+            degraded_reasons.append("Broker connection is limited")
         if worker_health is not None and self._is_stale(
             worker_health.checked_at,
             now,
             self.cadence_policy.max_broker_health_age_seconds,
         ):
-            degraded_reasons.append("broker health check is stale")
+            degraded_reasons.append("Broker status is out of date")
 
         if degraded_reasons:
             return MarketHealthReport(
@@ -139,7 +141,7 @@ class RuntimeHealthEvaluator:
             market=market,
             state=RuntimeHealthState.HEALTHY,
             ready=True,
-            reason="market ready",
+            reason="Ready",
         )
 
     def _is_stale(self, timestamp: datetime, now: datetime, max_age_seconds: int) -> bool:

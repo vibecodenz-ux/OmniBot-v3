@@ -30,9 +30,9 @@ export function Sidebar({ activeView, operatorName, overallState, buildLabel, bu
       <div className="brand-stack">
         <div className="brand-mark">OB3</div>
         <div className="brand-copy-block">
-          <p className="sidebar-eyebrow">Operator Deck</p>
+          <p className="sidebar-eyebrow">Control Center</p>
           <h1>OmniBot</h1>
-          <p className="sidebar-copy">FastAPI-backed runtime surface.</p>
+          <p className="sidebar-copy">Manage your dashboard, bots, analytics, journal, and settings.</p>
         </div>
       </div>
 
@@ -52,7 +52,7 @@ export function Sidebar({ activeView, operatorName, overallState, buildLabel, bu
 
       <div className="sidebar-footer">
         <div className="sidebar-pulse">
-          <span>Live surface</span>
+          <span>Status</span>
           <strong>{overallState}</strong>
           <small>Signed in as {operatorName}</small>
           <div className="sidebar-build">

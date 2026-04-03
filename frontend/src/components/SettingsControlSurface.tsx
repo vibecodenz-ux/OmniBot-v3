@@ -59,7 +59,7 @@ const BROKER_MODULES: BrokerModule[] = [
   {
     id: "alpaca",
     title: "Alpaca Paper",
-    subtitle: "US stock broker credentials",
+    subtitle: "US stock broker sign-in details",
     fields: [
       { secretId: "alpaca-api-key", label: "API Key", type: "password" },
       { secretId: "alpaca-api-secret", label: "API Secret", type: "password" },
@@ -68,7 +68,7 @@ const BROKER_MODULES: BrokerModule[] = [
   {
     id: "binance",
     title: "Binance Futures Demo",
-    subtitle: "USD-M futures demo credentials",
+    subtitle: "USD-M futures demo sign-in details",
     fields: [
       { secretId: "binance-api-key", label: "API Key", type: "password" },
       { secretId: "binance-api-secret", label: "API Secret", type: "password" },
@@ -77,7 +77,7 @@ const BROKER_MODULES: BrokerModule[] = [
   {
     id: "ig-forex-au",
     title: "IG Forex AU Demo",
-    subtitle: "Forex demo credentials",
+    subtitle: "Forex demo sign-in details",
     fields: [
       { secretId: "ig-forex-au-username", label: "Demo Username", type: "text" },
       { secretId: "ig-forex-au-password", label: "Demo Password", type: "password" },
@@ -183,10 +183,10 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
     setBusyKey("runtime");
     try {
       await updateSettings(csrfToken, { runtime: runtimeForm });
-      setPanelFeedback("runtime", "success", "Runtime policy updated.");
+      setPanelFeedback("runtime", "success", "Settings updated.");
       await refreshAll();
     } catch (error) {
-      setPanelFeedback("runtime", "danger", error instanceof Error ? error.message : "Runtime update failed.");
+      setPanelFeedback("runtime", "danger", error instanceof Error ? error.message : "Settings update failed.");
     } finally {
       setBusyKey(null);
     }
@@ -204,10 +204,10 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
           allowed_origin: String(authForm.allowed_origin || "").trim() || null,
         },
       });
-      setPanelFeedback("auth", "success", "Session policy updated.");
+      setPanelFeedback("auth", "success", "Security settings updated.");
       await refreshAll();
     } catch (error) {
-      setPanelFeedback("auth", "danger", error instanceof Error ? error.message : "Policy update failed.");
+      setPanelFeedback("auth", "danger", error instanceof Error ? error.message : "Security settings update failed.");
     } finally {
       setBusyKey(null);
     }
@@ -237,7 +237,7 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
       .filter(({ value }) => value.trim() !== "");
 
     if (entries.length === 0) {
-      setPanelFeedback(module.id, "warning", "Enter at least one updated credential value.");
+      setPanelFeedback(module.id, "warning", "Enter at least one updated value.");
       return;
     }
 
@@ -250,10 +250,10 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
         ...current,
         [module.id]: Object.fromEntries(module.fields.map((field) => [field.secretId, ""])),
       }));
-      setPanelFeedback(module.id, "success", `${module.title} credentials saved and validated.`);
+      setPanelFeedback(module.id, "success", `${module.title} details saved and checked.`);
       await refreshAll();
     } catch (error) {
-      setPanelFeedback(module.id, "danger", error instanceof Error ? error.message : "Credential save failed.");
+      setPanelFeedback(module.id, "danger", error instanceof Error ? error.message : "Save failed.");
     } finally {
       setBusyKey(null);
     }
@@ -262,7 +262,7 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
   async function validateBrokerModule(module: BrokerModule) {
     const configured = module.fields.filter((field) => secretsById.has(field.secretId));
     if (configured.length === 0) {
-      setPanelFeedback(module.id, "warning", "No stored credentials to validate.");
+      setPanelFeedback(module.id, "warning", "No saved details to check.");
       return;
     }
 
@@ -271,7 +271,7 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
       for (const field of configured) {
         await validateSecret(csrfToken, field.secretId);
       }
-      setPanelFeedback(module.id, "success", `${module.title} credentials validated.`);
+      setPanelFeedback(module.id, "success", `${module.title} details checked.`);
       await refreshAll();
     } catch (error) {
       setPanelFeedback(module.id, "danger", error instanceof Error ? error.message : "Validation failed.");
@@ -283,7 +283,7 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
   async function revokeBrokerModule(module: BrokerModule) {
     const configured = module.fields.filter((field) => secretsById.has(field.secretId));
     if (configured.length === 0) {
-      setPanelFeedback(module.id, "warning", "No stored credentials to revoke.");
+      setPanelFeedback(module.id, "warning", "No saved details to remove.");
       return;
     }
 
@@ -292,7 +292,7 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
       for (const field of configured) {
         await revokeSecret(csrfToken, field.secretId);
       }
-      setPanelFeedback(module.id, "success", `${module.title} credentials revoked.`);
+      setPanelFeedback(module.id, "success", `${module.title} details removed.`);
       await refreshAll();
     } catch (error) {
       setPanelFeedback(module.id, "danger", error instanceof Error ? error.message : "Revoke failed.");
@@ -375,13 +375,13 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
           <header className="panel-header">
             <div className="panel-copy">
               <p className="panel-eyebrow">Settings</p>
-              <h2>Runtime controls</h2>
+              <h2>App settings</h2>
             </div>
           </header>
           <div className="panel-body settings-form-stack">
             <div className="settings-form-grid">
               <label className="settings-field">
-                <span>Log level</span>
+                <span>Log detail</span>
                 <select value={runtimeForm.log_level || "info"} onChange={(event) => setRuntimeForm((current) => ({ ...current, log_level: event.target.value }))}>
                   {[
                     "debug",
@@ -393,7 +393,7 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
                 </select>
               </label>
               <label className="settings-field settings-field-checkbox">
-                <span>Broker paper trading</span>
+                <span>Paper trading</span>
                 <input
                   type="checkbox"
                   checked={Boolean(runtimeForm.broker_paper_trading)}
@@ -401,7 +401,7 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
                 />
               </label>
               <label className="settings-field">
-                <span>Portfolio snapshot interval seconds</span>
+                <span>Portfolio refresh interval (seconds)</span>
                 <input
                   type="number"
                   min={1}
@@ -410,7 +410,7 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
                 />
               </label>
               <label className="settings-field">
-                <span>Health check interval seconds</span>
+                <span>Status check interval (seconds)</span>
                 <input
                   type="number"
                   min={1}
@@ -421,7 +421,7 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
             </div>
             <div className="settings-form-actions">
               <button type="button" className="primary-button" onClick={() => void saveRuntimePolicy()} disabled={busyKey === "runtime"}>
-                {busyKey === "runtime" ? "Saving" : "Save runtime"}
+                {busyKey === "runtime" ? "Saving" : "Save settings"}
               </button>
               {feedback.runtime ? <StatusBadge label={feedback.runtime.message} tone={feedback.runtime.tone} /> : null}
             </div>
@@ -431,18 +431,18 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
         <section className="panel-surface">
           <header className="panel-header">
             <div className="panel-copy">
-              <p className="panel-eyebrow">Auth</p>
-              <h2>Session policy</h2>
+              <p className="panel-eyebrow">Security</p>
+              <h2>Sign-in and session</h2>
             </div>
           </header>
           <div className="panel-body settings-form-stack">
             <div className="settings-form-grid">
               <label className="settings-field settings-field-readonly">
-                <span>Admin username</span>
+                <span>Username</span>
                 <strong>{authForm.admin_username || "admin"}</strong>
               </label>
               <label className="settings-field">
-                <span>Session idle timeout seconds</span>
+                <span>Idle sign-out time (seconds)</span>
                 <input
                   type="number"
                   min={60}
@@ -451,7 +451,7 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
                 />
               </label>
               <label className="settings-field">
-                <span>Session absolute timeout seconds</span>
+                <span>Maximum session length (seconds)</span>
                 <input
                   type="number"
                   min={60}
@@ -460,7 +460,7 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
                 />
               </label>
               <label className="settings-field settings-field-checkbox">
-                <span>Session cookie secure</span>
+                <span>Secure cookies</span>
                 <input
                   type="checkbox"
                   checked={Boolean(authForm.session_cookie_secure)}
@@ -468,16 +468,16 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
                 />
               </label>
               <label className="settings-field">
-                <span>Session cookie samesite</span>
+                <span>Cookie access mode</span>
                 <select value={String(authForm.session_cookie_samesite || "strict")} onChange={(event) => setAuthForm((current) => ({ ...current, session_cookie_samesite: event.target.value }))}>
                   {["strict", "lax", "none"].map((value) => <option key={value} value={value}>{titleCase(value)}</option>)}
                 </select>
               </label>
               <label className="settings-field settings-field-wide">
-                <span>Allowed origin</span>
+                <span>Allowed website</span>
                 <input
                   type="text"
-                  placeholder="Optional origin"
+                  placeholder="Optional website"
                   value={String(authForm.allowed_origin || "")}
                   onChange={(event) => setAuthForm((current) => ({ ...current, allowed_origin: event.target.value }))}
                 />
@@ -485,7 +485,7 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
             </div>
             <div className="settings-form-actions">
               <button type="button" className="primary-button" onClick={() => void saveAuthPolicy()} disabled={busyKey === "auth"}>
-                {busyKey === "auth" ? "Saving" : "Save policy"}
+                {busyKey === "auth" ? "Saving" : "Save security settings"}
               </button>
               {feedback.auth ? <StatusBadge label={feedback.auth.message} tone={feedback.auth.tone} /> : null}
             </div>
@@ -496,8 +496,8 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
       <section className="panel-surface">
         <header className="panel-header">
           <div className="panel-copy">
-            <p className="panel-eyebrow">Broker setup</p>
-            <h2>Trading platform credentials</h2>
+            <p className="panel-eyebrow">Broker accounts</p>
+            <h2>Account connections</h2>
           </div>
         </header>
         <div className="panel-body">
@@ -654,7 +654,7 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
           <header className="panel-header">
             <div className="panel-copy">
               <p className="panel-eyebrow">Environment</p>
-              <h2>Deployment</h2>
+              <h2>App mode</h2>
             </div>
           </header>
           <div className="panel-body">
@@ -670,8 +670,8 @@ export function SettingsControlSurface({ csrfToken, build, settings, secrets, on
       <section className="panel-surface">
         <header className="panel-header">
           <div className="panel-copy">
-            <p className="panel-eyebrow">Dashboard password</p>
-            <h2>Change operator login</h2>
+            <p className="panel-eyebrow">Password</p>
+            <h2>Change password</h2>
           </div>
         </header>
         <div className="panel-body settings-form-stack">

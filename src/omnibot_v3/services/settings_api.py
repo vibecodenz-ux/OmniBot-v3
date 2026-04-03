@@ -95,8 +95,7 @@ class SettingsApiService:
 
         if session_absolute_timeout_seconds < session_idle_timeout_seconds:
             raise ValueError(
-                "session_absolute_timeout_seconds must be greater than or equal to "
-                "session_idle_timeout_seconds."
+                "Maximum session length must be greater than or equal to the idle sign-out time."
             )
 
         auth_config = replace(
@@ -132,7 +131,7 @@ class SettingsApiService:
     def _positive_seconds(self, value: int | None, *, field_name: str, default: int) -> int:
         resolved = default if value is None else value
         if resolved < 1:
-            raise ValueError(f"{field_name} must be greater than 0.")
+            raise ValueError(f"{self._field_label(field_name)} must be greater than 0.")
         return resolved
 
     def _resolve_allowed_origin(
@@ -148,5 +147,14 @@ class SettingsApiService:
 
         normalized = update.allowed_origin.strip().rstrip("/")
         if not normalized.startswith(("http://", "https://")):
-            raise ValueError("allowed_origin must start with http:// or https://.")
+            raise ValueError("Allowed website must start with http:// or https://.")
         return normalized
+
+    def _field_label(self, field_name: str) -> str:
+        labels = {
+            "portfolio_snapshot_interval_seconds": "Portfolio refresh interval",
+            "health_check_interval_seconds": "Status check interval",
+            "session_idle_timeout_seconds": "Idle sign-out time",
+            "session_absolute_timeout_seconds": "Maximum session length",
+        }
+        return labels.get(field_name, field_name.replace("_", " "))

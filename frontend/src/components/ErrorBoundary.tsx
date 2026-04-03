@@ -25,9 +25,9 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       return (
         <main className="login-shell">
           <section className="login-card">
-            <p className="panel-eyebrow">Frontend Error</p>
-            <h1>React migration preview failed to render</h1>
-            <p className="login-copy">The page hit a runtime error while rendering the dashboard shell.</p>
+            <p className="panel-eyebrow">Something Went Wrong</p>
+            <h1>Unable to load the page</h1>
+            <p className="login-copy">The dashboard could not be loaded.</p>
             <p className="form-error">{this.state.error.message}</p>
           </section>
         </main>
