@@ -125,7 +125,6 @@ from omnibot_v3.domain.secrets import (
     SecretStoragePolicy,
 )
 from omnibot_v3.domain.strategy import (
-    build_trade_thesis,
     CandidateSelection,
     DecisionExplanation,
     ExitCondition,
@@ -137,14 +136,15 @@ from omnibot_v3.domain.strategy import (
     RiskPolicyOverride,
     SetupFamily,
     SignalEvidence,
-    StrategyContext,
     StrategyCandidate,
+    StrategyContext,
     StrategyExecutionResult,
     StrategyPlugin,
     StrategyProfile,
     StrategySignal,
-    TradeThesis,
     TradeSetup,
+    TradeThesis,
+    build_trade_thesis,
 )
 from omnibot_v3.domain.worker import (
     MarketWorkerSettings,

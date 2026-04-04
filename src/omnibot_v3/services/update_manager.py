@@ -72,7 +72,9 @@ class UpdateManager:
         self._state_file = self._data_root / "update-state.json"
 
     def get_build_payload(self) -> dict[str, object]:
-        payload = self._local_build().to_payload()
+        payload: dict[str, object] = {
+            key: value for key, value in self._local_build().to_payload().items()
+        }
         payload["update_source"] = self._update_source_payload()
         return payload
 
@@ -110,10 +112,12 @@ class UpdateManager:
         check_payload = self.check_for_updates()
         if not bool(check_payload["update_available"]):
             raise UpdateApplyError("Current build already matches the latest GitHub build.")
+        target = check_payload.get("remote")
+        if not isinstance(target, dict):
+            raise UpdateApplyError("Remote build metadata is unavailable.")
 
         update_script = self._stage_update_script()
         local = self._local_build()
-        target = check_payload["remote"]
         backup_archive_name = self._build_backup_archive_name(local)
         command = self._build_update_command(
             update_script=update_script,

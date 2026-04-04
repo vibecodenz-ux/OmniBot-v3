@@ -95,14 +95,6 @@ class StrategyRuntime:
                 profile_tags=self.plugin.profile.tags,
             )
 
-        signal_metadata = {
-            "confidence": signal.confidence,
-            "regime": signal.regime,
-            "setup": signal.setup,
-            "exit_plan": signal.exit_plan,
-            "explanation": signal.explanation,
-        }
-
         decision = self.risk_engine.evaluate_order(
             market=context.market,
             account=context.account,
@@ -117,7 +109,11 @@ class StrategyRuntime:
                 strategy_version=self.plugin.profile.version,
                 decision=decision,
                 profile_tags=self.plugin.profile.tags,
-                **signal_metadata,
+                confidence=signal.confidence,
+                regime=signal.regime,
+                setup=signal.setup,
+                exit_plan=signal.exit_plan,
+                explanation=signal.explanation,
             )
 
         return StrategyExecutionResult(
@@ -126,5 +122,9 @@ class StrategyRuntime:
             decision=decision,
             order_request=signal.order_request,
             profile_tags=self.plugin.profile.tags,
-            **signal_metadata,
+            confidence=signal.confidence,
+            regime=signal.regime,
+            setup=signal.setup,
+            exit_plan=signal.exit_plan,
+            explanation=signal.explanation,
         )

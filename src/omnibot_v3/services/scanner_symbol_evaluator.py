@@ -26,7 +26,6 @@ from omnibot_v3.domain import (
     TradeThesis,
     build_trade_thesis,
 )
-from omnibot_v3.services.market_worker import MarketWorker
 from omnibot_v3.services.risk_engine import StrategyRuntime
 from omnibot_v3.services.rolling_decision_support import (
     RollingLegacyDecisionSupport,
@@ -235,6 +234,9 @@ class ScannerSymbolEvaluator:
     record_feedback: Callable[[ScannerFeedback, str, Decimal | None, str], None]
     cooldown_active: Callable[[str], bool]
     mark_trade_at: Callable[[str, datetime], None]
+    learning_adjustment_for: Callable[[str, str, StrategyExecutionResult], tuple[Decimal, tuple[str, ...]]] = (
+        lambda symbol, strategy_id, result: (Decimal("0"), ())
+    )
 
     def evaluate(self) -> dict[str, object]:
         latest_decision = f"Scanning {len(self.ordered_symbols)} ranked symbols."
@@ -279,13 +281,19 @@ class ScannerSymbolEvaluator:
                 latest_decision = str(thesis_exit.get("decision") or latest_decision)
                 thesis_order_request = thesis_exit.get("order_request")
                 if isinstance(thesis_order_request, OrderRequest):
+                    raw_details = thesis_exit.get("details", ())
+                    thesis_details = (
+                        tuple(str(detail) for detail in raw_details)
+                        if isinstance(raw_details, (list, tuple))
+                        else ()
+                    )
                     self.mark_trade_at(symbol, datetime.now(UTC))
                     self.record_feedback(
                         signal_accepted_feedback(
                             symbol,
                             price,
                             thesis_order_request.side,
-                            thesis_exit.get("details", ()),
+                            thesis_details,
                         ),
                         symbol,
                         price,
@@ -357,7 +365,15 @@ class ScannerSymbolEvaluator:
                         fallback_priority = _feedback_priority(feedback)
                     break
 
-                candidate_score = _candidate_score(result)
+                base_candidate_score = _candidate_score(result)
+                learning_score_delta, learning_details = self.learning_adjustment_for(symbol, strategy_id, result)
+                candidate_score = base_candidate_score + learning_score_delta
+                candidate_details = (
+                    f"candidate_base_score={base_candidate_score:.4f}",
+                    f"candidate_score={candidate_score:.4f}",
+                    *learning_details,
+                    *details,
+                )
                 candidate = StrategyCandidate(
                     symbol=symbol,
                     strategy_id=strategy_id,
@@ -370,13 +386,13 @@ class ScannerSymbolEvaluator:
                     exit_plan=result.exit_plan,
                     explanation=result.explanation,
                     rationale=result.decision.reason,
-                    evidence=_candidate_evidence(details),
+                    evidence=_candidate_evidence(candidate_details),
                 )
                 accepted_candidates.append(
                     _AcceptedCandidate(
                         candidate=candidate,
                         result=result,
-                        details=(f"candidate_score={candidate_score:.4f}", *details),
+                        details=candidate_details,
                         strategy_rank=strategy_rank,
                     )
                 )
@@ -396,6 +412,8 @@ class ScannerSymbolEvaluator:
                     symbol,
                     f"selected {best_candidate.candidate.strategy_id} from {len(accepted_candidates)} viable setup(s)",
                 )
+                order_request = best_candidate.result.order_request
+                assert order_request is not None
                 selection = CandidateSelection(
                     symbol=symbol,
                     selected=best_candidate.candidate,
@@ -407,7 +425,7 @@ class ScannerSymbolEvaluator:
                     signal_accepted_feedback(
                         symbol,
                         price,
-                        best_candidate.result.order_request.side,
+                        order_request.side,
                         best_candidate.details,
                     ),
                     symbol,
@@ -416,8 +434,8 @@ class ScannerSymbolEvaluator:
                 )
                 accepted = accepted_result_payload(
                     symbol,
-                    best_candidate.result.order_request.side,
-                    best_candidate.result.order_request,
+                    order_request.side,
+                    order_request,
                     price,
                     best_candidate.details,
                 )
@@ -720,7 +738,7 @@ def _decimal_from_payload(value: object) -> Decimal | None:
 def _int_from_payload(value: object) -> int | None:
     if value is None or value == "":
         return None
-    return int(value)
+    return int(str(value))
 
 
 def _normalized_trailing_ratio(value: object) -> Decimal | None:

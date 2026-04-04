@@ -41,6 +41,18 @@ class ReplayValidationResult:
 
 
 @dataclass(slots=True)
+class _ReplayRollup:
+    steps: int = 0
+    signals: int = 0
+    orders: int = 0
+    brakes: int = 0
+    closed_trades: int = 0
+    realized_pnl: Decimal = Decimal("0")
+    score_total: Decimal = Decimal("0")
+    score_count: int = 0
+
+
+@dataclass(slots=True)
 class ScannerReplayValidationService:
     scanner: StrategyScannerService
 
@@ -79,8 +91,8 @@ class ScannerReplayValidationService:
         event_counter: Counter[str] = Counter()
         previous_event_count = len(self.scanner._events[market])
         steps: list[ReplayValidationStep] = []
-        regime_stats: dict[str, dict[str, object]] = {}
-        strategy_stats: dict[str, dict[str, object]] = {}
+        regime_stats: dict[str, _ReplayRollup] = {}
+        strategy_stats: dict[str, _ReplayRollup] = {}
         replay_regimes: list[str] = []
         replay_strategies: list[str] = []
         previous_closed_trade_count = 0
@@ -139,14 +151,17 @@ class ScannerReplayValidationService:
             market=market,
             allow_execution=allow_execution,
             steps=tuple(steps),
-            signals_seen=int(final_activity["signals_seen"]),
-            orders_submitted=int(final_activity["orders_submitted"]),
+            signals_seen=_payload_int(final_activity, "signals_seen"),
+            orders_submitted=_payload_int(final_activity, "orders_submitted"),
             closed_trade_count=len(final_snapshot.closed_trades),
             realized_pnl=final_snapshot.total_realized_pnl,
             unrealized_pnl=final_snapshot.total_unrealized_pnl,
             final_portfolio_value=final_snapshot.total_portfolio_value,
             event_counts=dict(event_counter),
-            analytics=_build_replay_analytics(regime_stats, strategy_stats, replay_regimes, replay_strategies),
+            analytics={
+                **_build_replay_analytics(regime_stats, strategy_stats, replay_regimes, replay_strategies),
+                "learning_summary": self.scanner.learning_analytics_payload(market),
+            },
             final_activity=final_activity,
             final_snapshot=final_snapshot,
         )
@@ -172,8 +187,8 @@ class ScannerReplayValidationService:
     def _update_replay_rollups(
         self,
         *,
-        regime_stats: dict[str, dict[str, object]],
-        strategy_stats: dict[str, dict[str, object]],
+        regime_stats: dict[str, _ReplayRollup],
+        strategy_stats: dict[str, _ReplayRollup],
         replay_regimes: list[str],
         replay_strategies: list[str],
         selected_candidate: dict[str, object] | None,
@@ -199,42 +214,32 @@ class ScannerReplayValidationService:
 
 
 def _update_named_rollup(
-    rollups: dict[str, dict[str, object]],
+    rollups: dict[str, _ReplayRollup],
     name: str,
     event_types: tuple[str, ...],
     realized_delta: Decimal,
     closed_trade_delta: int,
     score: Decimal | None,
 ) -> None:
-    rollup = rollups.setdefault(
-        name,
-        {
-            "steps": 0,
-            "signals": 0,
-            "orders": 0,
-            "brakes": 0,
-            "closed_trades": 0,
-            "realized_pnl": Decimal("0"),
-            "score_total": Decimal("0"),
-            "score_count": 0,
-        },
+    rollup = rollups.setdefault(name, _ReplayRollup())
+    rollup.steps += 1
+    rollup.signals += int(
+        any(event_type in {"order-submitted", "risk-rejected", "execution-blocked"} for event_type in event_types)
     )
-    rollup["steps"] = int(rollup["steps"]) + 1
-    rollup["signals"] = int(rollup["signals"]) + int(any(event_type in {"order-submitted", "risk-rejected", "execution-blocked"} for event_type in event_types))
-    rollup["orders"] = int(rollup["orders"]) + event_types.count("order-submitted")
-    rollup["brakes"] = int(rollup["brakes"]) + sum(
+    rollup.orders += event_types.count("order-submitted")
+    rollup.brakes += sum(
         1 for event_type in event_types if event_type in {"risk-rejected", "execution-blocked"}
     )
-    rollup["closed_trades"] = int(rollup["closed_trades"]) + closed_trade_delta
-    rollup["realized_pnl"] = Decimal(rollup["realized_pnl"]) + realized_delta
+    rollup.closed_trades += closed_trade_delta
+    rollup.realized_pnl += realized_delta
     if score is not None:
-        rollup["score_total"] = Decimal(rollup["score_total"]) + score
-        rollup["score_count"] = int(rollup["score_count"]) + 1
+        rollup.score_total += score
+        rollup.score_count += 1
 
 
 def _build_replay_analytics(
-    regime_stats: dict[str, dict[str, object]],
-    strategy_stats: dict[str, dict[str, object]],
+    regime_stats: dict[str, _ReplayRollup],
+    strategy_stats: dict[str, _ReplayRollup],
     replay_regimes: list[str],
     replay_strategies: list[str],
 ) -> dict[str, object]:
@@ -254,34 +259,41 @@ def _build_replay_analytics(
     }
 
 
-def _serialize_replay_rollups(rollups: dict[str, dict[str, object]]) -> list[dict[str, object]]:
+def _serialize_replay_rollups(rollups: dict[str, _ReplayRollup]) -> list[dict[str, object]]:
     serialized: list[dict[str, object]] = []
-    for name, values in sorted(rollups.items(), key=lambda item: (int(item[1]["steps"]), item[0]), reverse=True):
-        score_count = int(values["score_count"])
+    for name, values in sorted(rollups.items(), key=lambda item: (item[1].steps, item[0]), reverse=True):
+        score_count = values.score_count
         average_score = (
-            (Decimal(values["score_total"]) / Decimal(score_count)).quantize(Decimal("0.0001"))
+            (values.score_total / Decimal(score_count)).quantize(Decimal("0.0001"))
             if score_count > 0
             else None
         )
         serialized.append(
             {
                 "name": name,
-                "steps": int(values["steps"]),
-                "signals": int(values["signals"]),
-                "orders": int(values["orders"]),
-                "brakes": int(values["brakes"]),
-                "closed_trades": int(values["closed_trades"]),
-                "realized_pnl": str(Decimal(values["realized_pnl"]).quantize(Decimal("0.0001"))),
+                "steps": values.steps,
+                "signals": values.signals,
+                "orders": values.orders,
+                "brakes": values.brakes,
+                "closed_trades": values.closed_trades,
+                "realized_pnl": str(values.realized_pnl.quantize(Decimal("0.0001"))),
                 "average_score": str(average_score) if average_score is not None else None,
             }
         )
     return serialized
 
 
+def _payload_int(payload: dict[str, object], key: str) -> int:
+    value = payload.get(key)
+    if isinstance(value, int):
+        return value
+    return int(str(value or 0))
+
+
 def _rotation_count(values: list[str]) -> int:
     if len(values) < 2:
         return 0
-    return sum(1 for previous, current in zip(values, values[1:]) if previous != current)
+    return sum(1 for previous, current in zip(values, values[1:], strict=False) if previous != current)
 
 
 def _decimal_or_none(value: object) -> Decimal | None:

@@ -14,6 +14,7 @@ from omnibot_v3.domain import (
     MarketStateTransitioned,
     runtime_event_response_from_domain,
 )
+from omnibot_v3.domain.contracts import RuntimeEvent
 from omnibot_v3.services.login_audit import LoginAuditService
 from omnibot_v3.services.orchestrator import TradingOrchestrator
 from omnibot_v3.services.text_formatting import sentence_case, title_label
@@ -46,7 +47,7 @@ class AuditApiService:
             "failure_summary": self.login_audit_service.summarize_failures(actor_id=actor_id),
         }
 
-    def _runtime_event_view(self, event: object) -> dict[str, object]:
+    def _runtime_event_view(self, event: RuntimeEvent) -> dict[str, object]:
         payload = runtime_event_response_from_domain(event)
         title, subtitle = self._runtime_event_copy(event, payload.market)
         meta = [
@@ -69,7 +70,7 @@ class AuditApiService:
             "new_state": payload.new_state,
         }
 
-    def _runtime_event_copy(self, event: object, market: str) -> tuple[str, str]:
+    def _runtime_event_copy(self, event: RuntimeEvent, market: str) -> tuple[str, str]:
         market_label = market.title()
         if isinstance(event, MarketStateTransitioned):
             return (f"{market_label} updated", "Market status changed.")

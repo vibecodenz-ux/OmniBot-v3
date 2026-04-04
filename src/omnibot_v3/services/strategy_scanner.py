@@ -18,31 +18,39 @@ from omnibot_v3.domain import (
     NormalizedPosition,
     OrderRequest,
     StrategyContext,
+    StrategyExecutionResult,
 )
 from omnibot_v3.services.market_catalog import normalize_profile_id, normalize_strategy_id
 from omnibot_v3.services.market_data_store import HistoricalBarStore
-from omnibot_v3.services.scanner_feedback import (
-    ScannerFeedback,
-    execution_summary as _execution_summary,
-)
 from omnibot_v3.services.market_hours import MarketHoursService
-from omnibot_v3.services.scanner_market_policy import policy_for_market
-from omnibot_v3.services.scanner_symbol_evaluator import RollingSignalPlugin, ScannerSymbolEvaluator
 from omnibot_v3.services.market_worker import MarketWorker
 from omnibot_v3.services.operator_state import OperatorStateService
 from omnibot_v3.services.orchestrator import TradingOrchestrator
-from omnibot_v3.services.rolling_decision_support import (
-    estimated_round_trip_cost_ratio as _estimated_round_trip_cost_ratio,
-    profile_settings as _profile_settings,
+from omnibot_v3.services.runtime_store import PortfolioSnapshotStore
+from omnibot_v3.services.scanner_feedback import (
+    ScannerFeedback,
+)
+from omnibot_v3.services.scanner_feedback import (
+    execution_summary as _execution_summary,
+)
+from omnibot_v3.services.scanner_learning import ScannerLearningState
+from omnibot_v3.services.scanner_market_policy import policy_for_market
+from omnibot_v3.services.scanner_runtime_support import (
+    build_strategy_profile as _strategy_profile,
+)
+from omnibot_v3.services.scanner_runtime_support import (
+    evaluate_execution_quality as _evaluate_execution_quality,
 )
 from omnibot_v3.services.scanner_runtime_support import (
     evaluate_portfolio_controls as _evaluate_portfolio_controls,
-    evaluate_execution_quality as _evaluate_execution_quality,
-    build_strategy_profile as _strategy_profile,
+)
+from omnibot_v3.services.scanner_runtime_support import (
     execution_mode_for_profile as _execution_mode_for_profile,
+)
+from omnibot_v3.services.scanner_runtime_support import (
     in_symbol_cooldown as _in_symbol_cooldown,
 )
-from omnibot_v3.services.runtime_store import PortfolioSnapshotStore
+from omnibot_v3.services.scanner_symbol_evaluator import RollingSignalPlugin, ScannerSymbolEvaluator
 
 
 class SelectionProvider(Protocol):
@@ -142,6 +150,7 @@ class StrategyScannerService:
     _rankings: dict[Market, tuple[_RankedSymbol, ...]] = field(default_factory=dict, init=False)
     _position_opened_at: dict[tuple[Market, str], datetime] = field(default_factory=dict, init=False)
     _selected_theses: dict[tuple[Market, str], dict[str, object]] = field(default_factory=dict, init=False)
+    _learning_state: ScannerLearningState = field(default_factory=ScannerLearningState, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     def __post_init__(self) -> None:
@@ -279,6 +288,9 @@ class StrategyScannerService:
             "market_summaries": market_summaries,
             "analytics": self._analytics_payload(recent_events, market_summaries, activities),
         }
+
+    def learning_analytics_payload(self, market: Market | None = None) -> dict[str, object]:
+        return self._learning_state.analytics_payload(market)
 
     def selected_thesis_for(self, market: Market, symbol: str) -> dict[str, object] | None:
         normalized_symbol = symbol.strip().upper()
@@ -496,6 +508,13 @@ class StrategyScannerService:
             if not execution_quality.accepted:
                 rejected_symbol = str(evaluation.get("signal_symbol") or order_request.symbol)
                 activity_updates["last_decision"] = _execution_summary(rejected_symbol, execution_quality.reason)
+                self._learning_state.record_execution_block(
+                    market=market,
+                    symbol=rejected_symbol,
+                    strategy_id=evaluation_strategy_id,
+                    reference_price=order_request.limit_price,
+                    fresh_price=fresh_price,
+                )
                 with self._lock:
                     self._record_event_locked(
                         market,
@@ -554,6 +573,11 @@ class StrategyScannerService:
                         rejected_symbol = str(evaluation.get("signal_symbol") or order_request.symbol)
                         activity_updates["last_error"] = str(exc)
                         activity_updates["last_decision"] = _execution_summary(rejected_symbol, f"order rejected: {exc}")
+                        self._learning_state.record_order_rejection(
+                            market=market,
+                            symbol=rejected_symbol,
+                            strategy_id=evaluation_strategy_id,
+                        )
                         with self._lock:
                             self._record_event_locked(
                                 market,
@@ -574,6 +598,13 @@ class StrategyScannerService:
                             )
                     else:
                         self.portfolio_store.save(refreshed_snapshot)
+                        self._learning_state.record_order_submission(
+                            market=market,
+                            symbol=order.symbol,
+                            strategy_id=evaluation_strategy_id,
+                            reference_price=order_request.limit_price,
+                            fill_price=order.average_fill_price,
+                        )
                         thesis_transition_state = _coerce_optional_str(evaluation.get("thesis_transition_state"))
                         thesis_transition_reason = _coerce_optional_str(evaluation.get("thesis_transition_reason"))
                         if (
@@ -711,7 +742,29 @@ class StrategyScannerService:
             record_feedback=record_feedback,
             cooldown_active=lambda symbol: _in_symbol_cooldown(self._last_trade_at.get((market, symbol)), profile_id),
             mark_trade_at=lambda symbol, occurred_at: self._last_trade_at.__setitem__((market, symbol), occurred_at),
+            learning_adjustment_for=lambda symbol, strategy_id, result: self._learning_adjustment_for(
+                market,
+                symbol,
+                strategy_id,
+                result,
+            ),
         ).evaluate()
+
+    def _learning_adjustment_for(
+        self,
+        market: Market,
+        symbol: str,
+        strategy_id: str,
+        result: StrategyExecutionResult,
+    ) -> tuple[Decimal, tuple[str, ...]]:
+        regime = result.regime.regime.value if result.regime is not None else None
+        adjustment = self._learning_state.score_adjustment(
+            market=market,
+            symbol=symbol,
+            strategy_id=strategy_id,
+            regime=regime,
+        )
+        return adjustment.score_delta, adjustment.details
 
     def _portfolio_snapshot_for_scan(
         self,
@@ -1141,8 +1194,16 @@ class StrategyScannerService:
             market_name = str(summary.get("market") or "")
             activity = activities[Market(market_name)] if market_name else None
             market_events = [event for event in events if event.market.value == market_name]
-            selected_candidate = summary.get("selected_candidate") if isinstance(summary.get("selected_candidate"), dict) else None
-            selected_thesis = summary.get("selected_thesis") if isinstance(summary.get("selected_thesis"), dict) else None
+            selected_candidate_summary = (
+                cast(dict[str, object], summary.get("selected_candidate"))
+                if isinstance(summary.get("selected_candidate"), dict)
+                else None
+            )
+            selected_thesis_summary = (
+                cast(dict[str, object], summary.get("selected_thesis"))
+                if isinstance(summary.get("selected_thesis"), dict)
+                else None
+            )
             recent_strategy_counts: Counter[str] = Counter()
             recent_regime_counts: Counter[str] = Counter()
             for event in market_events:
@@ -1159,8 +1220,16 @@ class StrategyScannerService:
             drift_reason = "Current selected thesis aligns with recent scanner flow."
             recent_brake_count = _coerce_int(summary.get("recent_brake_count", 0))
             recent_order_count = _coerce_int(summary.get("recent_order_count", 0))
-            top_strategy = selected_candidate.get("strategy_id") if selected_candidate is not None else None
-            top_regime = selected_candidate.get("regime") if selected_candidate is not None else None
+            top_strategy = (
+                _coerce_optional_str(selected_candidate_summary.get("strategy_id"))
+                if selected_candidate_summary is not None
+                else None
+            )
+            top_regime = (
+                _coerce_optional_str(selected_candidate_summary.get("regime"))
+                if selected_candidate_summary is not None
+                else None
+            )
             if _coerce_int(summary.get("recent_event_count", 0)) == 0:
                 drift_state = "quiet"
                 drift_reason = "No recent scanner events for this market yet."
@@ -1205,7 +1274,11 @@ class StrategyScannerService:
                     "dominant_recent_regime": dominant_recent_regime,
                     "drift_state": drift_state,
                     "drift_reason": drift_reason,
-                    "lifecycle_state": selected_thesis.get("lifecycle_state") if selected_thesis is not None else None,
+                    "lifecycle_state": (
+                        _coerce_optional_str(selected_thesis_summary.get("lifecycle_state"))
+                        if selected_thesis_summary is not None
+                        else None
+                    ),
                     "last_decision": summary.get("last_decision"),
                 }
             )
@@ -1234,6 +1307,7 @@ class StrategyScannerService:
                 {"name": name, "count": count}
                 for name, count in brake_reason_counts.most_common(5)
             ],
+            "learning_summary": self._learning_state.analytics_payload(),
             "drift_flags": drift_flags,
             "market_rollups": market_rollups,
         }
@@ -1385,6 +1459,7 @@ class StrategyScannerService:
                     reason=str(thesis.get("lifecycle_reason") or "partial scale-out executed"),
                     transitioned_at=trade.closed_at,
                 )
+                self._learning_state.record_closed_trade(market=market, trade=trade, thesis=thesis)
                 updated_thesis = dict(thesis)
                 updated_thesis["archived_scale_out_count"] = archived_scale_out_count + 1
                 self.operator_state_service.upsert_active_trade_thesis(market, symbol, updated_thesis)
@@ -1434,6 +1509,7 @@ class StrategyScannerService:
                     reason=str(thesis.get("lifecycle_reason") or "position-closed"),
                     transitioned_at=closed_trade.closed_at,
                 )
+                self._learning_state.record_closed_trade(market=market, trade=closed_trade, thesis=thesis)
             if self.operator_state_service is not None:
                 self.operator_state_service.remove_active_trade_thesis(market, symbol)
             with self._lock:

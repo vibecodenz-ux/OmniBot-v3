@@ -85,7 +85,6 @@ def build_live_market_workers(
 ) -> dict[Market, MarketWorker]:
     from omnibot_v3.domain.worker import MarketWorkerSettings
     from omnibot_v3.services.market_integrations import CryptoWorker, ForexWorker, StocksWorker
-    from omnibot_v3.services.market_worker import MarketWorker
 
     resolver = BrokerSecretResolver(registry=registry, store_service=store_service)
 

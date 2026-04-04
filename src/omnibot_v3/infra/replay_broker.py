@@ -26,7 +26,6 @@ from omnibot_v3.domain.broker import (
     OrderRequest,
     OrderSide,
     OrderStatus,
-    OrderType,
 )
 from omnibot_v3.domain.runtime import Market
 from omnibot_v3.infra.mock_broker import build_canned_account

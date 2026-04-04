@@ -41,13 +41,13 @@ if TYPE_CHECKING:
     )
     from omnibot_v3.infra.login_audit import InMemoryLoginAuditStore
     from omnibot_v3.infra.mock_broker import MockBrokerAdapter
-    from omnibot_v3.infra.replay_broker import ReplayBrokerAdapter
     from omnibot_v3.infra.postgres_runtime_store import (
         PostgresRuntimeEventStore,
         PostgresRuntimeSnapshotStore,
         PostgresRuntimeStoreConfig,
         build_runtime_event_archive_schema_sql,
     )
+    from omnibot_v3.infra.replay_broker import ReplayBrokerAdapter
     from omnibot_v3.infra.runtime_permissions import (
         RuntimePermissionPlan,
         RuntimePermissionTarget,

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from collections.abc import Callable
 from typing import TypedDict
 from uuid import uuid4
 from zoneinfo import ZoneInfo

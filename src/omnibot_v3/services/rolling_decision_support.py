@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Protocol, TypedDict
 
 from omnibot_v3.domain import (

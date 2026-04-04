@@ -14,7 +14,6 @@ from omnibot_v3.services.market_catalog import (
 from omnibot_v3.services.market_worker import MarketWorker
 from omnibot_v3.services.operator_state import OperatorStateService
 
-
 AUTONOMOUS_STRATEGY_MODE = "auto-rotate"
 
 

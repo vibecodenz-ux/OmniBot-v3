@@ -11,8 +11,8 @@ if TYPE_CHECKING:
     from omnibot_v3.services.data_catalog import DataCatalog
     from omnibot_v3.services.decision_engine import (
         ExecutionPlanner,
-        ExplanationBuilder,
         ExitPlanner,
+        ExplanationBuilder,
         LayeredStrategyPlugin,
         RegimeClassifier,
         SetupPlanner,
@@ -34,12 +34,12 @@ if TYPE_CHECKING:
     from omnibot_v3.services.runtime_api import RuntimeApiService
     from omnibot_v3.services.runtime_health import RuntimeHealthEvaluator
     from omnibot_v3.services.runtime_probe import RuntimeProbeService
+    from omnibot_v3.services.runtime_store import RuntimeEventStore, RuntimeSnapshotStore
     from omnibot_v3.services.scanner_replay_validation import (
         ReplayValidationResult,
         ReplayValidationStep,
         ScannerReplayValidationService,
     )
-    from omnibot_v3.services.runtime_store import RuntimeEventStore, RuntimeSnapshotStore
     from omnibot_v3.services.secret_api import SecretApiService, SecretNotFoundError, SecretRegistry
     from omnibot_v3.services.secrets import (
         SecretAccessError,
@@ -147,8 +147,8 @@ def __getattr__(name: str) -> Any:
     }:
         from omnibot_v3.services.decision_engine import (
             ExecutionPlanner,
-            ExplanationBuilder,
             ExitPlanner,
+            ExplanationBuilder,
             LayeredStrategyPlugin,
             RegimeClassifier,
             SetupPlanner,
