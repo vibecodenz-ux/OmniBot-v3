@@ -1,19 +1,29 @@
 import { useState } from "react";
 import { CircleAlert, Info } from "lucide-react";
 import { formatNzTime, titleCase } from "../lib/format";
-import type { RuntimeMarket, TradingModule } from "../lib/types";
+import type { RuntimeMarket, StrategyActivityItem, TradingModule } from "../lib/types";
 import { StatusBadge } from "./StatusBadge";
 
 interface MarketModuleCardProps {
   market: RuntimeMarket;
   module: TradingModule | undefined;
+  recentEvents?: StrategyActivityItem[];
   pendingCommand?: "start-market" | "stop-market";
   onCommand: (market: string, command: "start-market" | "stop-market") => void;
-  onSelectionChange: (market: string, field: "strategy_id" | "profile_id", value: string) => void;
 }
 
 function asArray<T>(value: T[] | undefined | null): T[] {
   return Array.isArray(value) ? value : [];
+}
+
+function isSameCandidate(
+  left: { strategy_id?: string; setup_family?: string | null; side?: string | null; symbol?: string | null },
+  right: { strategy_id?: string; setup_family?: string | null; side?: string | null; symbol?: string | null },
+): boolean {
+  return left.strategy_id === right.strategy_id
+    && (left.setup_family || null) === (right.setup_family || null)
+    && (left.side || null) === (right.side || null)
+    && (left.symbol || null) === (right.symbol || null);
 }
 
 function toneFromValue(value?: string): "success" | "warning" | "danger" | "neutral" {
@@ -68,7 +78,7 @@ function summarizeFooterMessage(module: TradingModule | undefined, marketState: 
   return (module?.status_message || module?.last_decision || titleCase(marketState)).split(".")[0];
 }
 
-export function MarketModuleCard({ market, module, pendingCommand, onCommand, onSelectionChange }: MarketModuleCardProps) {
+export function MarketModuleCard({ market, module, recentEvents, pendingCommand, onCommand }: MarketModuleCardProps) {
   const [collapsed, setCollapsed] = useState(false);
   const canStart = market.state !== "RUNNING";
   const isPending = pendingCommand === "start-market" || pendingCommand === "stop-market";
@@ -79,18 +89,35 @@ export function MarketModuleCard({ market, module, pendingCommand, onCommand, on
   const footerMessage = summarizeFooterMessage(module, market.state);
   const hasAttention = toneFromValue(module?.connection_state) === "danger" || toneFromValue(module?.automation_state) === "danger";
   const scannerDetail = module?.last_decision || module?.status_message || "No recent activity yet.";
+  const decisionHighlights = [
+    ...asArray(module?.status_details),
+    ...asArray(module?.module_notes),
+  ].filter(Boolean).slice(0, 4);
+  const guardrailItems = [
+    ...asArray(module?.active_guardrails),
+    module?.execution_mode === "scan-only" ? "Execution mode is scan-only, so new orders stay blocked until automation is re-enabled." : null,
+    module?.automation_state === "connected-only" ? "The worker is connected but automation has not been started for this market yet." : null,
+    module?.automation_state === "passive-scanning" ? "The scanner is observing and recording decisions without sending live orders." : null,
+  ].filter((value): value is string => Boolean(value)).slice(0, 6);
   const scannerMeta = [
     module?.last_scan_at ? `Checked ${formatNzTime(module.last_scan_at)}` : null,
     module?.last_order_at ? `Last order ${formatNzTime(module.last_order_at)}` : null,
     module?.last_price ? `Price ${module.last_price}` : null,
+    module?.candidate_count ? `${module.candidate_count} candidate${module.candidate_count === 1 ? "" : "s"}` : null,
+    module?.candidate_score ? `Score ${module.candidate_score}` : null,
   ].filter((value): value is string => Boolean(value));
+  const decisionItems = asArray(recentEvents).slice(0, 3);
+  const selectedCandidate = module?.last_selected_candidate;
+  const selectedThesis = module?.last_selected_thesis;
+  const candidateEvidence = asArray(selectedCandidate?.evidence).slice(0, 3);
+  const consideredCandidates = asArray(module?.considered_candidates).slice(0, 3);
 
   return (
     <article className="module-card">
       <header className="module-card-header">
         <div>
           <h3>{module?.label || titleCase(market.market)}</h3>
-          <p>{module?.module_scope || module?.descriptor || "Market bot"}</p>
+          <p>{module?.descriptor || module?.module_scope || "Automated market bot"}</p>
         </div>
         <div className="module-card-actions">
           <button type="button" className="utility-button" onClick={() => setCollapsed((value) => !value)}>
@@ -132,31 +159,56 @@ export function MarketModuleCard({ market, module, pendingCommand, onCommand, on
             </div>
           </div>
 
-          <div className="control-grid">
-            <label>
-              <span>Strategy</span>
-              <select
-                value={module?.selected_strategy_id || ""}
-                onChange={(event) => onSelectionChange(market.market, "strategy_id", event.target.value)}
-              >
-                {asArray(module?.strategies).map((option) => (
-                  <option key={option.id} value={option.id}>{option.name}</option>
-                ))}
-              </select>
-            </label>
+          {guardrailItems.length ? (
+            <div className="module-guardrails">
+              <strong>Active guardrails</strong>
+              <div className="module-guardrails-list">
+                {guardrailItems.map((item) => <span key={item}>{item}</span>)}
+              </div>
+            </div>
+          ) : null}
 
-            <label>
-              <span>Profile</span>
-              <select
-                value={module?.selected_profile_id || ""}
-                onChange={(event) => onSelectionChange(market.market, "profile_id", event.target.value)}
-              >
-                {asArray(module?.profiles).map((option) => (
-                  <option key={option.id} value={option.id}>{option.name}</option>
-                ))}
-              </select>
-            </label>
-          </div>
+          {decisionHighlights.length ? (
+            <div className="module-status-list">
+              {decisionHighlights.map((item) => <span key={item}>{item}</span>)}
+            </div>
+          ) : null}
+
+          {decisionItems.length ? (
+            <div className="module-decision-list">
+              <strong>Recent decisions</strong>
+              {decisionItems.map((event, index) => {
+                const eventType = typeof event.event_type === "string" ? event.event_type : `decision-${index + 1}`;
+                const message = typeof event.message === "string" ? event.message : "No decision message available.";
+                const occurredAt = typeof event.occurred_at === "string" ? event.occurred_at : null;
+                const details = asArray(event.details).slice(0, 2);
+                const tone = toneFromValue(event.level || eventType);
+                const eventCandidate = event.selected_candidate;
+                return (
+                  <article key={`${eventType}-${occurredAt || index}`} className={`module-decision-card module-decision-card-${tone}`}>
+                    <div className="module-decision-header">
+                      <span>{titleCase(eventType.replace(/-/g, " "))}</span>
+                      {occurredAt ? <small>{formatNzTime(occurredAt)}</small> : null}
+                    </div>
+                    <p>{message}</p>
+                    {eventCandidate ? (
+                      <div className="module-thesis-chip-row">
+                        <span>{titleCase(eventCandidate.strategy_id)}</span>
+                        {eventCandidate.setup_family ? <span>{titleCase(eventCandidate.setup_family)}</span> : null}
+                        {eventCandidate.side ? <span>{titleCase(eventCandidate.side)}</span> : null}
+                        {event.candidate_score ? <span>Score {event.candidate_score}</span> : null}
+                      </div>
+                    ) : null}
+                    {details.length ? (
+                      <div className="module-decision-details">
+                        {details.map((detail) => <small key={detail}>{detail}</small>)}
+                      </div>
+                    ) : null}
+                  </article>
+                );
+              })}
+            </div>
+          ) : null}
 
           <div className="module-footer">
             <p>{footerMessage}</p>
@@ -169,6 +221,39 @@ export function MarketModuleCard({ market, module, pendingCommand, onCommand, on
               {buttonLabel}
             </button>
           </div>
+
+          {selectedCandidate ? (
+            <div className="module-selected-candidate">
+              <strong>Current thesis</strong>
+              {selectedThesis?.thesis_id ? <small>{selectedThesis.thesis_id}</small> : null}
+              <div className="module-thesis-chip-row">
+                <span>{titleCase(selectedCandidate.strategy_id)}</span>
+                {selectedCandidate.setup_family ? <span>{titleCase(selectedCandidate.setup_family)}</span> : null}
+                {selectedCandidate.regime ? <span>{titleCase(selectedCandidate.regime)}</span> : null}
+                {selectedCandidate.side ? <span>{titleCase(selectedCandidate.side)}</span> : null}
+              </div>
+              {selectedCandidate.summary ? <p>{selectedCandidate.summary}</p> : null}
+              {candidateEvidence.length ? (
+                <div className="module-decision-details">
+                  {candidateEvidence.map((detail) => <small key={detail}>{detail}</small>)}
+                </div>
+              ) : null}
+              {consideredCandidates.length > 1 ? (
+                <div className="module-alternative-list">
+                  <small>Alternatives</small>
+                  <div className="module-thesis-chip-row">
+                    {consideredCandidates
+                      .filter((candidate) => !isSameCandidate(candidate, selectedCandidate))
+                      .map((candidate) => (
+                        <span key={`${candidate.strategy_id}-${candidate.score || "na"}`}>
+                          {titleCase(candidate.strategy_id)}{candidate.score ? ` (${candidate.score})` : ""}
+                        </span>
+                      ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="module-scan-detail">
             <p>{scannerDetail}</p>

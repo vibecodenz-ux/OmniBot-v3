@@ -2,7 +2,7 @@
 
 OmniBot v3 is a Linux-first, single-host-first trading dashboard for stocks, crypto, and forex.
 
-Current operator-facing release: Version 3, Build 006.
+Current operator-facing release: Version 3, Build 007.
 
 ## Quick Start On Debian 13
 
@@ -49,7 +49,7 @@ What `bootstrap_debian.sh` does for you:
 - installs the OmniBot runtime with API dependencies
 - creates `.env` from `.env.example` when missing
 - initializes runtime directories
-- builds the React dashboard frontend
+- builds the React dashboard frontend locally
 - generates and installs the `systemd` service assets
 - enables and starts the `omnibot-v3` service automatically
 - waits for a successful local HTTP `200` readiness result before reporting success
@@ -57,13 +57,9 @@ What `bootstrap_debian.sh` does for you:
 What you should see after install:
 
 - a local URL: `http://127.0.0.1:8000/`
-- on a fresh install, the script should also print a LAN URL when the machine has a network address
+- on a LAN-connected machine, a network URL such as `http://<your-linux-machine-ip>:8000/`
 
-The Debian bootstrap now sets the service bind host to `0.0.0.0` on fresh installs, so another computer on the same network can reach the dashboard without extra config.
-
-From another computer on the same network, open `http://<your-linux-machine-ip>:8000/`.
-
-If you rerun setup inside an older clone created before this change, delete `.env` first or update `OMNIBOT_BIND_HOST` there so the rerun picks up the LAN-capable default.
+Fresh installs default to `OMNIBOT_BIND_HOST=0.0.0.0`, so another computer on the same network can reach the dashboard without extra config.
 
 If your Linux firewall is enabled, also allow TCP port `8000` with your distro's firewall tool.
 
@@ -104,15 +100,15 @@ bash scripts/run_dashboard.sh
 This export includes:
 
 - the FastAPI runtime and React dashboard
-- the Debian bootstrap and dashboard launch scripts
-- the updater handoff script used by the in-app updater
+- the Debian bootstrap, local launcher, and updater scripts needed to install, run, and update the package
 - the frontend source and package metadata needed to rebuild `frontend/dist`
 - the runtime source tree under `src/omnibot_v3`
-- `.env.example` and `pyproject.toml`
+- `.env.example`, `.gitignore`, `pyproject.toml`, and `requirements/`
 
 The dashboard currently includes:
 
-- per-market controls and strategy selection
+- per-market profile selectors and START or STOP module controls
+- autonomous scanner and strategy-family summaries
 - analytics and candlestick views
 - a trade journal
 - a Settings page with broker credential management
@@ -124,7 +120,7 @@ Copy `.env.example` to `.env` if you want to override defaults.
 
 Common settings:
 
-- `OMNIBOT_BIND_HOST`, default `127.0.0.1`
+- `OMNIBOT_BIND_HOST`, default `0.0.0.0`
 - `OMNIBOT_PORT`, default `8000`
 - `OMNIBOT_DATA_ROOT`, default `data`
 - `OMNIBOT_SECRETS_DIR`, default `secrets`

@@ -13,6 +13,7 @@ from omnibot_v3.domain.auth import (
     LoginOutcome,
 )
 from omnibot_v3.services.secrets import SecretPolicyService
+from omnibot_v3.services.text_formatting import sentence_case
 
 
 class LoginAuditStore(Protocol):
@@ -112,4 +113,4 @@ class LoginAuditService:
             return None
         if failure_reason == "incorrect username or password":
             return "Incorrect username or password."
-        return failure_reason[:1].upper() + failure_reason[1:]
+        return sentence_case(failure_reason)

@@ -572,6 +572,21 @@ button {
   box-shadow: var(--shadow-card);
 }
 
+.series-thesis-card {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.72rem 0.78rem;
+  border-radius: 0.95rem;
+  border: 1px solid rgba(128, 151, 188, 0.14);
+  background: rgba(128, 151, 188, 0.05);
+}
+
+.series-thesis-card p {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-soft);
+}
+
 .series-chart-block {
   display: grid;
   gap: 0.55rem;
@@ -1055,6 +1070,164 @@ button {
   overflow-wrap: anywhere;
 }
 
+.module-guardrails {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.72rem 0.78rem;
+  border-radius: 0.95rem;
+  border: 1px solid rgba(255, 191, 94, 0.18);
+  background: linear-gradient(180deg, rgba(255, 191, 94, 0.08), rgba(128, 151, 188, 0.04));
+}
+
+.module-guardrails strong {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--warning);
+}
+
+.module-guardrails-list {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.module-guardrails-list span {
+  padding: 0.4rem 0.58rem;
+  border-radius: 999px;
+  background: rgba(255, 191, 94, 0.1);
+  border: 1px solid rgba(255, 191, 94, 0.18);
+  color: var(--text-soft);
+  font-size: 0.74rem;
+}
+
+.module-status-list {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.module-status-list span {
+  padding: 0.4rem 0.58rem;
+  border-radius: 999px;
+  background: rgba(128, 151, 188, 0.08);
+  border: 1px solid rgba(128, 151, 188, 0.14);
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.module-decision-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.module-decision-list > strong {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+}
+
+.module-decision-card {
+  display: grid;
+  gap: 0.32rem;
+  padding: 0.68rem 0.74rem;
+  border-radius: 0.95rem;
+  border: 1px solid rgba(128, 151, 188, 0.14);
+  background: rgba(128, 151, 188, 0.04);
+}
+
+.module-decision-card-warning {
+  border-color: rgba(255, 187, 102, 0.22);
+  background: linear-gradient(180deg, rgba(255, 187, 102, 0.08), rgba(128, 151, 188, 0.04));
+}
+
+.module-decision-card-danger {
+  border-color: rgba(255, 110, 110, 0.22);
+  background: linear-gradient(180deg, rgba(255, 110, 110, 0.08), rgba(128, 151, 188, 0.04));
+}
+
+.module-decision-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+
+.module-decision-header span,
+.module-decision-header small,
+.module-decision-card p,
+.module-decision-details small {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.module-decision-header span {
+  font-size: 0.78rem;
+  color: var(--text-soft);
+}
+
+.module-decision-header small,
+.module-decision-details small {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.module-decision-card p {
+  font-size: 0.8rem;
+  color: var(--text-soft);
+}
+
+.module-decision-details {
+  display: grid;
+  gap: 0.24rem;
+}
+
+.module-thesis-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.module-thesis-chip-row span {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.18rem 0.48rem;
+  border: 1px solid rgba(128, 151, 188, 0.18);
+  background: rgba(128, 151, 188, 0.08);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.module-selected-candidate {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.72rem 0.78rem;
+  border-radius: 0.95rem;
+  border: 1px solid rgba(128, 151, 188, 0.14);
+  background: rgba(128, 151, 188, 0.05);
+}
+
+.module-selected-candidate strong,
+.module-selected-candidate p {
+  margin: 0;
+}
+
+.module-selected-candidate p {
+  font-size: 0.8rem;
+  color: var(--text-soft);
+}
+
+.module-alternative-list {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.module-alternative-list small {
+  color: var(--text-muted);
+}
+
 .module-scan-detail {
   display: grid;
   gap: 0.22rem;
@@ -1088,8 +1261,34 @@ button {
   gap: 0.4rem;
 }
 
+.feed-card-warning {
+  border: 1px solid rgba(255, 187, 102, 0.22);
+  background: linear-gradient(180deg, rgba(255, 187, 102, 0.08), rgba(128, 151, 188, 0.04));
+}
+
+.feed-card-danger {
+  border: 1px solid rgba(255, 110, 110, 0.22);
+  background: linear-gradient(180deg, rgba(255, 110, 110, 0.08), rgba(128, 151, 188, 0.04));
+}
+
 .feed-card p {
   font-size: 0.88rem;
+}
+
+.feed-detail-list {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.feed-detail-list span {
+  padding: 0.48rem 0.6rem;
+  border-radius: 0.8rem;
+  border: 1px solid rgba(128, 151, 188, 0.14);
+  background: rgba(128, 151, 188, 0.05);
+  color: var(--text-soft);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .key-value-grid .support-card,

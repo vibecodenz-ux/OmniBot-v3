@@ -164,7 +164,6 @@ class UpdateDashboardPasswordBody(BaseModel):
 
 
 class UpdateTradingModuleSelectionBody(BaseModel):
-    strategy_id: str | None = None
     profile_id: str | None = None
 
 
@@ -257,12 +256,16 @@ def create_app(
         operator_state_service=operator_state_service,
     )
     trading_module_service.health_provider = runtime_service.get_market_health
-    strategy_scanner = StrategyScannerService(
-        orchestrator=runtime_service.orchestrator,
-        workers=runtime_service.workers,
-        portfolio_store=runtime_service.portfolio_store,
-        selection_provider=trading_module_service.current_selection,
-        historical_bar_store=historical_bar_store,
+    strategy_scanner_kwargs = {
+        "orchestrator": runtime_service.orchestrator,
+        "workers": runtime_service.workers,
+        "portfolio_store": runtime_service.portfolio_store,
+        "selection_provider": trading_module_service.current_selection,
+        "historical_bar_store": historical_bar_store,
+    }
+    strategy_scanner = _build_strategy_scanner(
+        operator_state_service=operator_state_service,
+        **strategy_scanner_kwargs,
     )
     runtime_service.on_market_started = strategy_scanner.start_market
     trading_module_service.activity_provider = strategy_scanner.activity_payload
@@ -288,6 +291,7 @@ def create_app(
             portfolio_store=runtime_service.portfolio_store,
             workers=runtime_service.workers,
             operator_state_service=operator_state_service,
+            thesis_provider=getattr(strategy_scanner, "selected_thesis_for", None),
         ),
         market_hours_service=MarketHoursService(),
         update_manager=UpdateManager(
@@ -523,7 +527,6 @@ def create_app(
         try:
             return dependencies.trading_module_service.update_selection_payload(
                 market=market,
-                strategy_id=body.strategy_id,
                 profile_id=body.profile_id,
             )
         except ValueError as exc:
@@ -746,6 +749,25 @@ def main() -> int:
     config = load_config()
     uvicorn.run(create_app(), host=config.dashboard_host, port=config.dashboard_port)
     return 0
+
+
+def _build_strategy_scanner(
+    *,
+    orchestrator,
+    workers,
+    portfolio_store,
+    selection_provider,
+    historical_bar_store,
+    operator_state_service: OperatorStateService,
+) -> StrategyScannerService:
+    return StrategyScannerService(
+        orchestrator=orchestrator,
+        workers=workers,
+        portfolio_store=portfolio_store,
+        selection_provider=selection_provider,
+        operator_state_service=operator_state_service,
+        historical_bar_store=historical_bar_store,
+    )
 
 
 def _default_admin_password(environment: OmnibotEnvironment) -> str:

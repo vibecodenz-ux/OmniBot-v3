@@ -78,25 +78,25 @@ def render_systemd_service(config: SystemdServiceConfig) -> str:
 
 
 def render_environment_template(config: SystemdServiceConfig) -> str:
+    defaults = [
+        ("OMNIBOT_ENV", "production"),
+        ("OMNIBOT_ADMIN_PASSWORD", "change-me"),
+        ("OMNIBOT_DB_DSN", "postgresql://omnibot:change-me@localhost:5432/omnibot"),
+        ("OMNIBOT_BIND_HOST", "127.0.0.1"),
+        ("OMNIBOT_PORT", "8000"),
+        ("OMNIBOT_LOG_LEVEL", "info"),
+        ("OMNIBOT_SECRETS_DIR", "secrets"),
+        ("OMNIBOT_PORTFOLIO_SNAPSHOT_INTERVAL", "60"),
+    ]
+    overrides = {key: value for key, value in config.environment}
     lines = [
         "# OmniBot v3 systemd environment template",
         "# Replace placeholder values before enabling the service.",
-        "OMNIBOT_ENV=production",
-        "OMNIBOT_ADMIN_PASSWORD=change-me",
-        "OMNIBOT_DB_DSN=postgresql://omnibot:change-me@localhost:5432/omnibot",
-        "OMNIBOT_BIND_HOST=0.0.0.0",
-        "OMNIBOT_PORT=8000",
-        "OMNIBOT_LOG_LEVEL=info",
-        "OMNIBOT_SECRETS_DIR=secrets",
-        "OMNIBOT_PORTFOLIO_SNAPSHOT_INTERVAL=60",
     ]
-    existing_keys = {key for key, _value in config.environment}
-    for key, value in config.environment:
-        if key != "OMNIBOT_ENV":
-            lines.append(f"{key}={value}")
-    if "OMNIBOT_ENV" in existing_keys:
-        env_value = next(value for key, value in config.environment if key == "OMNIBOT_ENV")
-        lines[2] = f"OMNIBOT_ENV={env_value}"
+    for key, value in defaults:
+        lines.append(f"{key}={overrides.pop(key, value)}")
+    for key, value in overrides.items():
+        lines.append(f"{key}={value}")
     return "\n".join(lines) + "\n"
 
 

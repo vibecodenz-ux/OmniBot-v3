@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import threading
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_DOWN, Decimal
-from typing import Protocol, TypedDict, cast
+from decimal import Decimal
+from typing import Protocol, cast
 
 from omnibot_v3.domain import (
     BarTimeframe,
@@ -17,32 +17,37 @@ from omnibot_v3.domain import (
     NormalizedAccount,
     NormalizedPosition,
     OrderRequest,
-    OrderSide,
-    OrderType,
-    RiskPolicy,
     StrategyContext,
-    StrategyProfile,
-    StrategySignal,
 )
 from omnibot_v3.services.market_catalog import normalize_profile_id, normalize_strategy_id
 from omnibot_v3.services.market_data_store import HistoricalBarStore
+from omnibot_v3.services.scanner_feedback import (
+    ScannerFeedback,
+    execution_summary as _execution_summary,
+)
 from omnibot_v3.services.market_hours import MarketHoursService
+from omnibot_v3.services.scanner_market_policy import policy_for_market
+from omnibot_v3.services.scanner_symbol_evaluator import RollingSignalPlugin, ScannerSymbolEvaluator
 from omnibot_v3.services.market_worker import MarketWorker
+from omnibot_v3.services.operator_state import OperatorStateService
 from omnibot_v3.services.orchestrator import TradingOrchestrator
-from omnibot_v3.services.risk_engine import RiskPolicyEngine, StrategyRuntime
+from omnibot_v3.services.rolling_decision_support import (
+    estimated_round_trip_cost_ratio as _estimated_round_trip_cost_ratio,
+    profile_settings as _profile_settings,
+)
+from omnibot_v3.services.scanner_runtime_support import (
+    evaluate_portfolio_controls as _evaluate_portfolio_controls,
+    evaluate_execution_quality as _evaluate_execution_quality,
+    build_strategy_profile as _strategy_profile,
+    execution_mode_for_profile as _execution_mode_for_profile,
+    in_symbol_cooldown as _in_symbol_cooldown,
+)
 from omnibot_v3.services.runtime_store import PortfolioSnapshotStore
 
 
 class SelectionProvider(Protocol):
     def __call__(self, market: Market) -> tuple[str, str]:
         """Return the selected strategy_id and profile_id for a market."""
-
-
-class ProfileSettings(TypedDict):
-    target_notional: Decimal
-    threshold_bias: Decimal
-    breakout_buffer: Decimal
-    cooldown_seconds: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +68,11 @@ class ScannerActivity:
     last_order_id: str | None = None
     last_error: str | None = None
     last_price: str | None = None
+    candidate_count: int = 0
+    candidate_score: str | None = None
+    last_selected_candidate: dict[str, object] | None = None
+    last_selected_thesis: dict[str, object] | None = None
+    considered_candidates: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,35 +87,11 @@ class ScannerEvent:
     profile_id: str | None = None
     price: str | None = None
     details: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class _SignalDiagnostics:
-    current_price: Decimal
-    previous_price: Decimal
-    baseline_price: Decimal
-    delta_ratio: Decimal
-    baseline_ratio: Decimal
-    prior_high: Decimal
-    prior_low: Decimal
-    momentum_up: bool
-    momentum_down: bool
-    breakout_up: bool
-    breakout_down: bool
-    reversion_up: bool
-    reversion_down: bool
-    long_votes: int
-    short_votes: int
-    momentum_up_delta_min: Decimal
-    momentum_up_baseline_min: Decimal
-    momentum_down_delta_max: Decimal
-    momentum_down_baseline_max: Decimal
-    breakout_above_level: Decimal
-    breakout_below_level: Decimal
-    reversion_up_baseline_max: Decimal
-    reversion_up_delta_min: Decimal
-    reversion_down_baseline_min: Decimal
-    reversion_down_delta_max: Decimal
+    candidate_count: int = 0
+    candidate_score: str | None = None
+    selected_candidate: dict[str, object] | None = None
+    selected_thesis: dict[str, object] | None = None
+    considered_candidates: tuple[dict[str, object], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +111,8 @@ class _PositionOverlay:
     side: str
     entry_price: Decimal
     close_target_price: Decimal | None
+    thesis_id: str | None = None
+    strategy_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -133,6 +121,7 @@ class StrategyScannerService:
     workers: dict[Market, MarketWorker]
     portfolio_store: PortfolioSnapshotStore
     selection_provider: SelectionProvider
+    operator_state_service: OperatorStateService | None = None
     quote_provider: Callable[[Market, str], Decimal | None] | None = None
     market_hours: MarketHoursService = field(default_factory=MarketHoursService)
     historical_bar_store: HistoricalBarStore | None = None
@@ -151,6 +140,8 @@ class StrategyScannerService:
     _quote_cache: dict[tuple[Market, str], tuple[Decimal, datetime]] = field(default_factory=dict, init=False)
     _events: dict[Market, deque[ScannerEvent]] = field(default_factory=dict, init=False)
     _rankings: dict[Market, tuple[_RankedSymbol, ...]] = field(default_factory=dict, init=False)
+    _position_opened_at: dict[tuple[Market, str], datetime] = field(default_factory=dict, init=False)
+    _selected_theses: dict[tuple[Market, str], dict[str, object]] = field(default_factory=dict, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     def __post_init__(self) -> None:
@@ -243,6 +234,11 @@ class StrategyScannerService:
             "last_order_id": activity.last_order_id,
             "last_error": activity.last_error,
             "last_price": activity.last_price,
+            "candidate_count": activity.candidate_count,
+            "candidate_score": activity.candidate_score,
+            "last_selected_candidate": activity.last_selected_candidate,
+            "last_selected_thesis": activity.last_selected_thesis,
+            "considered_candidates": list(activity.considered_candidates),
             "top_ranked_symbol": self._rankings[market][0].symbol if self._rankings[market] else None,
             "ranked_symbols": [item.symbol for item in self._rankings[market][: self.ranking_top_n]],
         }
@@ -253,6 +249,11 @@ class StrategyScannerService:
             activities = dict(self._activities)
             rankings = dict(self._rankings)
         events.sort(key=lambda item: item.occurred_at, reverse=True)
+        recent_events = events[:40]
+        market_summaries = [
+            self._market_summary_payload(market, activities[market], rankings.get(market, ()))
+            for market in (Market.STOCKS, Market.CRYPTO, Market.FOREX)
+        ]
         return {
             "generated_at": datetime.now(UTC).isoformat(),
             "events": [
@@ -267,14 +268,27 @@ class StrategyScannerService:
                     "profile_id": event.profile_id,
                     "price": event.price,
                     "details": list(event.details),
+                    "candidate_count": event.candidate_count,
+                    "candidate_score": event.candidate_score,
+                    "selected_candidate": event.selected_candidate,
+                    "selected_thesis": event.selected_thesis,
+                    "considered_candidates": list(event.considered_candidates),
                 }
-                for event in events[:40]
+                for event in recent_events
             ],
-            "market_summaries": [
-                self._market_summary_payload(market, activities[market], rankings.get(market, ()))
-                for market in (Market.STOCKS, Market.CRYPTO, Market.FOREX)
-            ],
+            "market_summaries": market_summaries,
+            "analytics": self._analytics_payload(recent_events, market_summaries, activities),
         }
+
+    def selected_thesis_for(self, market: Market, symbol: str) -> dict[str, object] | None:
+        normalized_symbol = symbol.strip().upper()
+        with self._lock:
+            thesis = self._selected_theses.get((market, normalized_symbol))
+        if thesis is not None:
+            return dict(thesis)
+        if self.operator_state_service is None:
+            return None
+        return self.operator_state_service.get_active_trade_thesis(market, normalized_symbol)
 
     def _run_market_loop(self, market: Market, stop_event: threading.Event) -> None:
         worker = self.workers[market]
@@ -298,10 +312,16 @@ class StrategyScannerService:
             self._threads.pop(market, None)
             self._stop_events.pop(market, None)
 
-    def _scan_market(self, market: Market, *, allow_execution: bool) -> None:
+    def _scan_market(
+        self,
+        market: Market,
+        *,
+        allow_execution: bool,
+        observed_at: datetime | None = None,
+    ) -> None:
         worker = self.workers[market]
         validation = worker.validate_configuration()
-        now = datetime.now(UTC)
+        now = observed_at or datetime.now(UTC)
         execution_mode = "scan-and-trade" if allow_execution else "scan-only"
         if not validation.valid:
             self.orchestrator.heartbeat(market)
@@ -374,11 +394,12 @@ class StrategyScannerService:
 
         snapshot = self._portfolio_snapshot_for_scan(market, worker, now)
         self.portfolio_store.save(snapshot)
+        self._sync_position_open_times(market, snapshot.positions, now)
+        self._sync_trade_thesis_state(market, snapshot.positions, snapshot.closed_trades)
         worker_status = worker.status()
         self.orchestrator.heartbeat(market, last_reconciled_at=worker_status.last_reconciled_at)
 
-        strategy_id, profile_id = self.selection_provider(market)
-        strategy_id = normalize_strategy_id(market, strategy_id)
+        _, profile_id = self.selection_provider(market)
         profile_id = normalize_profile_id(market, profile_id)
         execution_mode = _execution_mode_for_profile(profile_id)
         latest_prices = self._prices_for_symbols(worker, market, tuple(worker.settings.symbols), now)
@@ -388,7 +409,6 @@ class StrategyScannerService:
             worker,
             snapshot.account,
             snapshot.positions,
-            strategy_id,
             profile_id,
             latest_prices,
             ranked_symbols,
@@ -408,6 +428,11 @@ class StrategyScannerService:
             "last_error": evaluation.get("error"),
             "last_signal_symbol": evaluation.get("signal_symbol"),
             "last_price": evaluation.get("price"),
+            "candidate_count": evaluation.get("candidate_count", 0),
+            "candidate_score": evaluation.get("candidate_score"),
+            "last_selected_candidate": evaluation.get("selected_candidate"),
+            "last_selected_thesis": evaluation.get("selected_thesis"),
+            "considered_candidates": evaluation.get("considered_candidates", ()),
         }
         if evaluation.get("signal_detected"):
             with self._lock:
@@ -416,47 +441,224 @@ class StrategyScannerService:
                 activity_updates["last_signal_at"] = now
 
         order_request = evaluation.get("order_request")
+        event_details = cast(tuple[str, ...], evaluation.get("details") or ())
+        evaluation_strategy_id = str(evaluation.get("strategy_id") or "auto")
+        candidate_count = _coerce_int(evaluation.get("candidate_count", 0))
+        candidate_score = _coerce_optional_str(evaluation.get("candidate_score"))
+        selected_candidate = _coerce_optional_dict(evaluation.get("selected_candidate"))
+        selected_thesis = _coerce_optional_dict(evaluation.get("selected_thesis"))
+        considered_candidates = _coerce_dict_sequence(evaluation.get("considered_candidates"))
+        thesis_update = _coerce_optional_dict(evaluation.get("thesis_update"))
+        if thesis_update is not None:
+            thesis_symbol = str(evaluation.get("signal_symbol") or "").strip().upper()
+            if thesis_symbol:
+                with self._lock:
+                    self._selected_theses[(market, thesis_symbol)] = thesis_update
+                if self.operator_state_service is not None:
+                    self.operator_state_service.upsert_active_trade_thesis(
+                        market,
+                        thesis_symbol,
+                        thesis_update,
+                        now=now,
+                    )
+                activity_updates["last_selected_thesis"] = thesis_update
+                with self._lock:
+                    self._record_event_locked(
+                        market,
+                        message=str(evaluation.get("decision") or "Thesis updated."),
+                        event_type="thesis-updated",
+                        occurred_at=now,
+                        symbol=thesis_symbol,
+                        strategy_id=evaluation_strategy_id,
+                        profile_id=profile_id,
+                        price=str(evaluation.get("price") or ""),
+                        details=event_details,
+                        candidate_count=candidate_count,
+                        candidate_score=candidate_score,
+                        selected_candidate=selected_candidate,
+                        selected_thesis=thesis_update,
+                        considered_candidates=considered_candidates,
+                    )
         if isinstance(order_request, OrderRequest) and execution_mode == "scan-and-trade":
-            try:
-                order = worker.submit_order(order_request)
-                refreshed_snapshot = worker.reconcile_portfolio()
-            except Exception as exc:
+            fresh_price = self._price_for_symbol(
+                worker,
+                market,
+                str(evaluation.get("signal_symbol") or order_request.symbol),
+                now,
+                force_refresh=True,
+            )
+            execution_quality = _evaluate_execution_quality(
+                market=market,
+                order_request=order_request,
+                fresh_price=fresh_price,
+                profile_id=profile_id,
+            )
+            if not execution_quality.accepted:
                 rejected_symbol = str(evaluation.get("signal_symbol") or order_request.symbol)
-                activity_updates["last_error"] = str(exc)
-                activity_updates["last_decision"] = _execution_summary(rejected_symbol, f"order rejected: {exc}")
+                activity_updates["last_decision"] = _execution_summary(rejected_symbol, execution_quality.reason)
                 with self._lock:
                     self._record_event_locked(
                         market,
                         message=str(activity_updates["last_decision"]),
-                        event_type="order-rejected",
+                        event_type="execution-blocked",
                         occurred_at=now,
                         level="warning",
                         symbol=rejected_symbol,
-                        strategy_id=strategy_id,
+                        strategy_id=evaluation_strategy_id,
                         profile_id=profile_id,
-                        price=str(evaluation.get("price") or order_request.limit_price or ""),
+                        price=str(fresh_price or evaluation.get("price") or order_request.limit_price or ""),
+                        details=(
+                            *event_details,
+                            f"execution_quality={execution_quality.reason}",
+                            f"evaluated_price={order_request.limit_price}",
+                            f"fresh_price={fresh_price}",
+                        ),
+                        candidate_count=candidate_count,
+                        candidate_score=candidate_score,
+                        selected_candidate=selected_candidate,
+                        selected_thesis=selected_thesis,
+                        considered_candidates=considered_candidates,
                     )
             else:
-                self.portfolio_store.save(refreshed_snapshot)
-                worker_status = worker.status()
-                self.orchestrator.heartbeat(market, last_reconciled_at=worker_status.last_reconciled_at)
-                with self._lock:
-                    current = self._activities[market]
-                    activity_updates["orders_submitted"] = current.orders_submitted + 1
-                activity_updates["last_order_at"] = now
-                activity_updates["last_order_id"] = order.order_id
-                activity_updates["last_decision"] = f"Submitted {order.side.value.upper()} {order.symbol} from {strategy_id}."
-                with self._lock:
-                    self._record_event_locked(
-                        market,
-                        message=str(activity_updates["last_decision"]),
-                        event_type="order-submitted",
-                        occurred_at=now,
-                        symbol=order.symbol,
-                        strategy_id=strategy_id,
-                        profile_id=profile_id,
-                        price=str(order.average_fill_price or order_request.limit_price or ""),
+                if fresh_price is not None and fresh_price > Decimal("0"):
+                    order_request = replace(order_request, limit_price=fresh_price)
+                portfolio_control = _evaluate_portfolio_controls(snapshot, order_request, profile_id, now)
+                if not portfolio_control.accepted:
+                    activity_updates["last_decision"] = _execution_summary(
+                        str(evaluation.get("signal_symbol") or order_request.symbol),
+                        portfolio_control.reason,
                     )
+                    with self._lock:
+                        self._record_event_locked(
+                            market,
+                            message=str(activity_updates["last_decision"]),
+                            event_type="risk-rejected",
+                            occurred_at=now,
+                            level="warning",
+                            symbol=str(evaluation.get("signal_symbol") or order_request.symbol),
+                            strategy_id=evaluation_strategy_id,
+                            profile_id=profile_id,
+                            price=str(evaluation.get("price") or order_request.limit_price or ""),
+                            details=(*event_details, f"portfolio_control={portfolio_control.reason}"),
+                            candidate_count=candidate_count,
+                            candidate_score=candidate_score,
+                            selected_candidate=selected_candidate,
+                            selected_thesis=selected_thesis,
+                            considered_candidates=considered_candidates,
+                        )
+                else:
+                    try:
+                        order = worker.submit_order(order_request)
+                        refreshed_snapshot = worker.reconcile_portfolio()
+                    except Exception as exc:
+                        rejected_symbol = str(evaluation.get("signal_symbol") or order_request.symbol)
+                        activity_updates["last_error"] = str(exc)
+                        activity_updates["last_decision"] = _execution_summary(rejected_symbol, f"order rejected: {exc}")
+                        with self._lock:
+                            self._record_event_locked(
+                                market,
+                                message=str(activity_updates["last_decision"]),
+                                event_type="order-rejected",
+                                occurred_at=now,
+                                level="warning",
+                                symbol=rejected_symbol,
+                                strategy_id=evaluation_strategy_id,
+                                profile_id=profile_id,
+                                price=str(evaluation.get("price") or order_request.limit_price or ""),
+                                details=event_details,
+                                candidate_count=candidate_count,
+                                candidate_score=candidate_score,
+                                selected_candidate=selected_candidate,
+                                selected_thesis=selected_thesis,
+                                considered_candidates=considered_candidates,
+                            )
+                    else:
+                        self.portfolio_store.save(refreshed_snapshot)
+                        thesis_transition_state = _coerce_optional_str(evaluation.get("thesis_transition_state"))
+                        thesis_transition_reason = _coerce_optional_str(evaluation.get("thesis_transition_reason"))
+                        if (
+                            self.operator_state_service is not None
+                            and thesis_transition_state is not None
+                            and thesis_transition_reason is not None
+                        ):
+                            self.operator_state_service.transition_active_trade_thesis(
+                                market,
+                                order.symbol,
+                                state=thesis_transition_state,
+                                reason=thesis_transition_reason,
+                                transitioned_at=now,
+                            )
+                        if self.operator_state_service is not None and selected_thesis is not None:
+                            persisted_active_thesis = self.operator_state_service.get_active_trade_thesis(market, order.symbol)
+                            merged_selected_thesis = dict(selected_thesis)
+                            if isinstance(persisted_active_thesis, dict):
+                                persisted_archived_scale_out_count = _coerce_int(
+                                    persisted_active_thesis.get("archived_scale_out_count", 0)
+                                )
+                                merged_archived_scale_out_count = _coerce_int(
+                                    merged_selected_thesis.get("archived_scale_out_count", 0)
+                                )
+                                if persisted_archived_scale_out_count > merged_archived_scale_out_count:
+                                    merged_selected_thesis["archived_scale_out_count"] = persisted_archived_scale_out_count
+                            self.operator_state_service.upsert_active_trade_thesis(
+                                market,
+                                order.symbol,
+                                merged_selected_thesis,
+                                now=now,
+                            )
+                            selected_thesis = merged_selected_thesis
+                        self._sync_trade_thesis_state(market, refreshed_snapshot.positions, refreshed_snapshot.closed_trades)
+                        worker_status = worker.status()
+                        self.orchestrator.heartbeat(market, last_reconciled_at=worker_status.last_reconciled_at)
+                        position_still_active = any(
+                            position.symbol.upper() == order.symbol.upper() for position in refreshed_snapshot.positions
+                        )
+                        with self._lock:
+                            if selected_thesis is not None and position_still_active:
+                                persisted_active_thesis = (
+                                    self.operator_state_service.get_active_trade_thesis(market, order.symbol)
+                                    if self.operator_state_service is not None
+                                    else None
+                                )
+                                merged_selected_thesis = dict(selected_thesis)
+                                if isinstance(persisted_active_thesis, dict):
+                                    persisted_archived_scale_out_count = _coerce_int(
+                                        persisted_active_thesis.get("archived_scale_out_count", 0)
+                                    )
+                                    merged_archived_scale_out_count = _coerce_int(
+                                        merged_selected_thesis.get("archived_scale_out_count", 0)
+                                    )
+                                    if persisted_archived_scale_out_count > merged_archived_scale_out_count:
+                                        merged_selected_thesis["archived_scale_out_count"] = persisted_archived_scale_out_count
+                                self._selected_theses[(market, order.symbol.upper())] = merged_selected_thesis
+                                if self.operator_state_service is not None:
+                                    self.operator_state_service.upsert_active_trade_thesis(
+                                        market,
+                                        order.symbol,
+                                        merged_selected_thesis,
+                                    )
+                            current = self._activities[market]
+                            activity_updates["orders_submitted"] = current.orders_submitted + 1
+                        activity_updates["last_order_at"] = now
+                        activity_updates["last_order_id"] = order.order_id
+                        activity_updates["last_decision"] = f"Submitted {order.side.value.upper()} {order.symbol} from {evaluation_strategy_id}."
+                        with self._lock:
+                            self._record_event_locked(
+                                market,
+                                message=str(activity_updates["last_decision"]),
+                                event_type="order-submitted",
+                                occurred_at=now,
+                                symbol=order.symbol,
+                                strategy_id=evaluation_strategy_id,
+                                profile_id=profile_id,
+                                price=str(order.average_fill_price or order_request.limit_price or ""),
+                                details=event_details,
+                                candidate_count=candidate_count,
+                                candidate_score=candidate_score,
+                                selected_candidate=selected_candidate,
+                                selected_thesis=selected_thesis,
+                                considered_candidates=considered_candidates,
+                            )
 
         with self._lock:
             self._set_activity_locked(market, **activity_updates)
@@ -467,135 +669,49 @@ class StrategyScannerService:
         worker: MarketWorker,
         account: NormalizedAccount,
         positions: tuple[NormalizedPosition, ...],
-        strategy_id: str,
         profile_id: str,
         latest_prices: dict[str, Decimal],
         ranked_symbols: list[_RankedSymbol],
         observed_at: datetime,
     ) -> dict[str, object]:
-        ordered_symbols = [item.symbol for item in ranked_symbols] or list(worker.settings.symbols)
-        latest_decision = f"Scanning {len(ordered_symbols)} ranked symbols."
-        fallback_result: dict[str, object] | None = None
-        for symbol in ordered_symbols:
-            price = latest_prices.get(symbol)
-            if price is None or price <= Decimal("0"):
-                latest_decision = f"{symbol}: no quote available."
-                with self._lock:
-                    self._record_event_locked(
-                        market,
-                        message=f"{symbol}: broker price unavailable.",
-                        event_type="quote-missing",
-                        occurred_at=observed_at,
-                        level="warning",
-                        symbol=symbol,
-                        strategy_id=strategy_id,
-                        profile_id=profile_id,
-                    )
-                continue
-            self._record_live_bar(market, symbol, price, observed_at)
-            history = self._history_for(market, symbol)
-            history.append(price)
-            bars = self._recent_bars_for(market, symbol, limit=12)
-            plugin = _RollingSignalPlugin(
-                profile=_strategy_profile(market, strategy_id, profile_id),
-                profile_id=profile_id,
-                symbol=symbol,
-                recent_prices=tuple(history),
-                recent_bars=bars,
-                quantity=_order_quantity(market, profile_id, price),
-                allow_short=market in {Market.CRYPTO, Market.FOREX},
-            )
-            runtime = StrategyRuntime(
-                plugin=plugin,
-                risk_engine=_risk_engine(market, profile_id),
-            )
-            context = StrategyContext(
-                market=market,
-                account=account,
-                positions=positions,
-                latest_price=price,
-                bar_timestamp=datetime.now(UTC),
-            )
-            result = runtime.evaluate(context)
-            latest_decision = _execution_summary(symbol, result.decision.reason)
-            if result.order_request is None:
-                detail_lines = plugin.explain_no_signal(context)
-                with self._lock:
-                    self._record_event_locked(
-                        market,
-                        message=f"{symbol}: analysed at {price} and skipped because {result.decision.reason}.",
-                        event_type="analysis-skip",
-                        occurred_at=observed_at,
-                        symbol=symbol,
-                        strategy_id=strategy_id,
-                        profile_id=profile_id,
-                        price=str(price),
-                        details=detail_lines,
-                    )
-                fallback_result = {"decision": latest_decision, "price": str(price), "signal_symbol": symbol}
-                continue
-            if not _can_submit_for_symbol(market, symbol, positions, result.order_request):
-                with self._lock:
-                    self._record_event_locked(
-                        market,
-                        message=f"{symbol}: signal generated but execution is disabled for this market.",
-                        event_type="execution-blocked",
-                        occurred_at=observed_at,
-                        level="warning",
-                        symbol=symbol,
-                        strategy_id=strategy_id,
-                        profile_id=profile_id,
-                        price=str(price),
-                    )
-                fallback_result = {
-                    "decision": _execution_summary(symbol, "signal generated but execution is scan-only for this market"),
-                    "signal_detected": True,
-                    "signal_symbol": symbol,
-                    "price": str(price),
-                }
-                continue
-            if _in_symbol_cooldown(self._last_trade_at.get((market, symbol)), profile_id):
-                with self._lock:
-                    self._record_event_locked(
-                        market,
-                        message=f"{symbol}: signal detected at {price} but cooldown is active.",
-                        event_type="cooldown-blocked",
-                        occurred_at=observed_at,
-                        level="warning",
-                        symbol=symbol,
-                        strategy_id=strategy_id,
-                        profile_id=profile_id,
-                        price=str(price),
-                    )
-                fallback_result = {
-                    "decision": _execution_summary(symbol, "signal generated but symbol cooldown is active"),
-                    "signal_detected": True,
-                    "signal_symbol": symbol,
-                    "price": str(price),
-                }
-                continue
-            self._last_trade_at[(market, symbol)] = datetime.now(UTC)
+        ordered_symbols = tuple(item.symbol for item in ranked_symbols) or tuple(worker.settings.symbols)
+
+        def record_feedback(feedback: ScannerFeedback, symbol: str, price: Decimal | None, strategy_for_event: str) -> None:
             with self._lock:
                 self._record_event_locked(
                     market,
-                    message=f"{symbol}: signal accepted at {price} for {result.order_request.side.value.upper()}.",
-                    event_type="signal-accepted",
+                    message=feedback.message,
+                    event_type=feedback.event_type,
                     occurred_at=observed_at,
+                    level=feedback.level,
                     symbol=symbol,
-                    strategy_id=strategy_id,
+                    strategy_id=strategy_for_event,
                     profile_id=profile_id,
-                    price=str(price),
+                    price=str(price) if price is not None else None,
+                    details=feedback.details,
                 )
-            return {
-                "decision": _execution_summary(symbol, f"signal accepted for {result.order_request.side.value.upper()}"),
-                "signal_detected": True,
-                "signal_symbol": symbol,
-                "order_request": result.order_request,
-                "price": str(price),
-            }
-        if fallback_result is not None:
-            return fallback_result
-        return {"decision": latest_decision}
+
+        return ScannerSymbolEvaluator(
+            market=market,
+            account=account,
+            positions=positions,
+            profile_id=profile_id,
+            latest_prices=latest_prices,
+            ordered_symbols=ordered_symbols,
+            observed_at=observed_at,
+            record_live_bar=self._record_live_bar,
+            history_for=self._history_for,
+            recent_bars_for=lambda requested_market, symbol, limit: self._recent_bars_for(
+                requested_market,
+                symbol,
+                limit=limit,
+            ),
+            position_opened_at_for=lambda symbol: self._position_opened_at.get((market, symbol.upper())),
+            selected_thesis_for=lambda symbol: self.selected_thesis_for(market, symbol),
+            record_feedback=record_feedback,
+            cooldown_active=lambda symbol: _in_symbol_cooldown(self._last_trade_at.get((market, symbol)), profile_id),
+            mark_trade_at=lambda symbol, occurred_at: self._last_trade_at.__setitem__((market, symbol), occurred_at),
+        ).evaluate()
 
     def _portfolio_snapshot_for_scan(
         self,
@@ -614,8 +730,10 @@ class StrategyScannerService:
         market: Market,
         symbol: str,
         observed_at: datetime,
+        *,
+        force_refresh: bool = False,
     ) -> Decimal | None:
-        return self._prices_for_symbols(worker, market, (symbol,), observed_at).get(symbol)
+        return self._prices_for_symbols(worker, market, (symbol,), observed_at, force_refresh=force_refresh).get(symbol)
 
     def _prices_for_symbols(
         self,
@@ -623,6 +741,8 @@ class StrategyScannerService:
         market: Market,
         symbols: tuple[str, ...],
         observed_at: datetime,
+        *,
+        force_refresh: bool = False,
     ) -> dict[str, Decimal]:
         resolved: dict[str, Decimal] = {}
         missing_symbols: list[str] = []
@@ -633,7 +753,11 @@ class StrategyScannerService:
         for symbol in symbols:
             cache_key = (market, symbol)
             cached = self._quote_cache.get(cache_key)
-            if cached is not None and observed_at - cached[1] <= timedelta(seconds=cache_ttl_seconds):
+            if (
+                not force_refresh
+                and cached is not None
+                and observed_at - cached[1] <= timedelta(seconds=cache_ttl_seconds)
+            ):
                 resolved[symbol] = cached[0]
             else:
                 missing_symbols.append(symbol)
@@ -934,14 +1058,33 @@ class StrategyScannerService:
                 }
                 for bar in bars
             ]
+        market_events = tuple(self._events[market])
+        recent_brakes = sum(1 for event in market_events if event.event_type in {"risk-rejected", "execution-blocked"})
+        recent_execution_blocks = sum(1 for event in market_events if event.event_type == "execution-blocked")
+        recent_risk_rejections = sum(1 for event in market_events if event.event_type == "risk-rejected")
+        recent_orders = sum(1 for event in market_events if event.event_type == "order-submitted")
+        recent_signals = sum(
+            1 for event in market_events if event.event_type in {"order-submitted", "risk-rejected", "execution-blocked"}
+        )
         return {
             "market": market.value,
             "label": _market_display_label(market),
             "warmup_status": activity.warmup_status,
             "last_scan_at": activity.last_scan_at.isoformat() if activity.last_scan_at else None,
             "last_decision": activity.last_decision,
+            "candidate_count": activity.candidate_count,
+            "candidate_score": activity.candidate_score,
+            "selected_candidate": activity.last_selected_candidate,
+            "selected_thesis": activity.last_selected_thesis,
+            "considered_candidates": list(activity.considered_candidates),
             "top_symbol": rankings[0].symbol if rankings else None,
             "available_symbols": list(worker_symbols),
+            "recent_event_count": len(market_events),
+            "recent_brake_count": recent_brakes,
+            "recent_execution_block_count": recent_execution_blocks,
+            "recent_risk_rejection_count": recent_risk_rejections,
+            "recent_order_count": recent_orders,
+            "recent_signal_count": recent_signals,
             "ranked_symbols": [
                 {
                     "symbol": item.symbol,
@@ -958,6 +1101,141 @@ class StrategyScannerService:
             "candles_by_symbol": candles_by_symbol,
             "position_overlays_by_symbol": position_overlays_by_symbol,
             "candle_timeframe": self.bar_timeframe.value,
+        }
+
+    def _analytics_payload(
+        self,
+        events: list[ScannerEvent],
+        market_summaries: list[dict[str, object]],
+        activities: dict[Market, ScannerActivity],
+    ) -> dict[str, object]:
+        event_counts = Counter(event.event_type for event in events)
+        strategy_counts: Counter[str] = Counter()
+        regime_counts: Counter[str] = Counter()
+        lifecycle_counts: Counter[str] = Counter()
+        brake_reason_counts: Counter[str] = Counter()
+        drift_flags: list[dict[str, object]] = []
+
+        for event in events:
+            selected_candidate = event.selected_candidate if isinstance(event.selected_candidate, dict) else None
+            if selected_candidate is not None:
+                strategy_id = _coerce_optional_str(selected_candidate.get("strategy_id"))
+                regime = _coerce_optional_str(selected_candidate.get("regime"))
+                if strategy_id is not None:
+                    strategy_counts[strategy_id] += 1
+                if regime is not None:
+                    regime_counts[regime] += 1
+            selected_thesis = event.selected_thesis if isinstance(event.selected_thesis, dict) else None
+            if selected_thesis is not None:
+                lifecycle_state = _coerce_optional_str(selected_thesis.get("lifecycle_state"))
+                if lifecycle_state is not None:
+                    lifecycle_counts[lifecycle_state] += 1
+            for detail in event.details:
+                if detail.startswith("portfolio_control="):
+                    brake_reason_counts[detail.removeprefix("portfolio_control=")] += 1
+                elif detail.startswith("execution_quality="):
+                    brake_reason_counts[detail.removeprefix("execution_quality=")] += 1
+
+        market_rollups: list[dict[str, object]] = []
+        for summary in market_summaries:
+            market_name = str(summary.get("market") or "")
+            activity = activities[Market(market_name)] if market_name else None
+            market_events = [event for event in events if event.market.value == market_name]
+            selected_candidate = summary.get("selected_candidate") if isinstance(summary.get("selected_candidate"), dict) else None
+            selected_thesis = summary.get("selected_thesis") if isinstance(summary.get("selected_thesis"), dict) else None
+            recent_strategy_counts: Counter[str] = Counter()
+            recent_regime_counts: Counter[str] = Counter()
+            for event in market_events:
+                if isinstance(event.selected_candidate, dict):
+                    recent_strategy = _coerce_optional_str(event.selected_candidate.get("strategy_id"))
+                    recent_regime = _coerce_optional_str(event.selected_candidate.get("regime"))
+                    if recent_strategy is not None:
+                        recent_strategy_counts[recent_strategy] += 1
+                    if recent_regime is not None:
+                        recent_regime_counts[recent_regime] += 1
+            dominant_recent_strategy = recent_strategy_counts.most_common(1)[0][0] if recent_strategy_counts else None
+            dominant_recent_regime = recent_regime_counts.most_common(1)[0][0] if recent_regime_counts else None
+            drift_state = "aligned"
+            drift_reason = "Current selected thesis aligns with recent scanner flow."
+            recent_brake_count = _coerce_int(summary.get("recent_brake_count", 0))
+            recent_order_count = _coerce_int(summary.get("recent_order_count", 0))
+            top_strategy = selected_candidate.get("strategy_id") if selected_candidate is not None else None
+            top_regime = selected_candidate.get("regime") if selected_candidate is not None else None
+            if _coerce_int(summary.get("recent_event_count", 0)) == 0:
+                drift_state = "quiet"
+                drift_reason = "No recent scanner events for this market yet."
+            elif recent_brake_count >= 2 and recent_order_count == 0:
+                drift_state = "constrained"
+                drift_reason = "Recent portfolio or execution brakes are blocking current opportunities."
+            elif top_regime is not None and dominant_recent_regime is not None and top_regime != dominant_recent_regime:
+                drift_state = "regime-shift"
+                drift_reason = f"Current regime {top_regime} differs from recent dominant regime {dominant_recent_regime}."
+            elif top_strategy is not None and dominant_recent_strategy is not None and top_strategy != dominant_recent_strategy:
+                drift_state = "strategy-rotation"
+                drift_reason = f"Current strategy {top_strategy} differs from recent dominant strategy {dominant_recent_strategy}."
+
+            if drift_state not in {"aligned", "quiet"}:
+                drift_flags.append(
+                    {
+                        "market": market_name,
+                        "state": drift_state,
+                        "reason": drift_reason,
+                    }
+                )
+
+            market_rollups.append(
+                {
+                    "market": market_name,
+                    "label": summary.get("label"),
+                    "warmup_status": summary.get("warmup_status"),
+                    "scanner_running": activity.scanner_running if activity is not None else False,
+                    "execution_mode": activity.execution_mode if activity is not None else None,
+                    "signals_seen": activity.signals_seen if activity is not None else 0,
+                    "orders_submitted": activity.orders_submitted if activity is not None else 0,
+                    "candidate_count": summary.get("candidate_count", 0),
+                    "recent_event_count": summary.get("recent_event_count", 0),
+                    "recent_brake_count": recent_brake_count,
+                    "recent_execution_block_count": summary.get("recent_execution_block_count", 0),
+                    "recent_risk_rejection_count": summary.get("recent_risk_rejection_count", 0),
+                    "recent_order_count": recent_order_count,
+                    "top_symbol": summary.get("top_symbol"),
+                    "top_strategy": top_strategy,
+                    "top_regime": top_regime,
+                    "dominant_recent_strategy": dominant_recent_strategy,
+                    "dominant_recent_regime": dominant_recent_regime,
+                    "drift_state": drift_state,
+                    "drift_reason": drift_reason,
+                    "lifecycle_state": selected_thesis.get("lifecycle_state") if selected_thesis is not None else None,
+                    "last_decision": summary.get("last_decision"),
+                }
+            )
+
+        return {
+            "recent_event_count": len(events),
+            "active_scanner_count": sum(1 for activity in activities.values() if activity.scanner_running),
+            "ready_market_count": sum(1 for activity in activities.values() if activity.warmup_status == "ready"),
+            "signal_count": sum(activity.signals_seen for activity in activities.values()),
+            "order_count": sum(activity.orders_submitted for activity in activities.values()),
+            "brake_count": event_counts.get("risk-rejected", 0) + event_counts.get("execution-blocked", 0),
+            "event_counts": dict(sorted(event_counts.items())),
+            "strategy_mix": [
+                {"name": name, "count": count}
+                for name, count in strategy_counts.most_common(5)
+            ],
+            "regime_mix": [
+                {"name": name, "count": count}
+                for name, count in regime_counts.most_common(5)
+            ],
+            "lifecycle_mix": [
+                {"name": name, "count": count}
+                for name, count in lifecycle_counts.most_common(5)
+            ],
+            "brake_reasons": [
+                {"name": name, "count": count}
+                for name, count in brake_reason_counts.most_common(5)
+            ],
+            "drift_flags": drift_flags,
+            "market_rollups": market_rollups,
         }
 
     def _position_overlays_payload(
@@ -982,6 +1260,8 @@ class StrategyScannerService:
                     "side": overlay.side,
                     "entry_price": str(overlay.entry_price),
                     "close_target_price": str(overlay.close_target_price) if overlay.close_target_price is not None else None,
+                    "thesis_id": overlay.thesis_id,
+                    "strategy_id": overlay.strategy_id,
                 }
             )
         return overlays
@@ -993,11 +1273,16 @@ class StrategyScannerService:
         strategy_id: str,
         profile_id: str,
     ) -> _PositionOverlay:
+        selected_thesis = self.selected_thesis_for(market, position.symbol)
+        overlay_strategy_id = str(selected_thesis.get("strategy_id")) if isinstance(selected_thesis, dict) and selected_thesis.get("strategy_id") else strategy_id
+        overlay_profile_id = str(selected_thesis.get("profile_id")) if isinstance(selected_thesis, dict) and selected_thesis.get("profile_id") else profile_id
         return _PositionOverlay(
             symbol=position.symbol,
             side="buy" if position.quantity >= 0 else "sell",
             entry_price=position.average_price,
-            close_target_price=self._planned_exit_price(market, position, strategy_id, profile_id),
+            close_target_price=self._planned_exit_price(market, position, overlay_strategy_id, overlay_profile_id),
+            thesis_id=str(selected_thesis.get("thesis_id")) if isinstance(selected_thesis, dict) else None,
+            strategy_id=overlay_strategy_id,
         )
 
     def _planned_exit_price(
@@ -1012,14 +1297,14 @@ class StrategyScannerService:
         if len(recent_bars) < 3 and len(recent_prices) < 3:
             return None
 
-        plugin = _RollingSignalPlugin(
+        plugin = RollingSignalPlugin(
             profile=_strategy_profile(market, strategy_id, profile_id),
             profile_id=profile_id,
             symbol=position.symbol,
             recent_prices=recent_prices,
             recent_bars=recent_bars,
             quantity=abs(position.quantity),
-            allow_short=market in {Market.CRYPTO, Market.FOREX},
+            allow_short=policy_for_market(market).allow_short,
         )
         return plugin.planned_exit_price(
             StrategyContext(
@@ -1036,6 +1321,123 @@ class StrategyScannerService:
                 bar_timestamp=datetime.now(UTC),
             )
         )
+
+    def _sync_position_open_times(
+        self,
+        market: Market,
+        positions: tuple[NormalizedPosition, ...],
+        observed_at: datetime,
+    ) -> None:
+        active_keys = {(market, position.symbol.upper()) for position in positions}
+        with self._lock:
+            for key in active_keys:
+                self._position_opened_at.setdefault(key, observed_at)
+            stale_keys = [key for key in self._position_opened_at if key[0] == market and key not in active_keys]
+            for key in stale_keys:
+                self._position_opened_at.pop(key, None)
+
+    def _sync_trade_thesis_state(
+        self,
+        market: Market,
+        positions: tuple[NormalizedPosition, ...],
+        closed_trades,
+    ) -> None:
+        active_symbols = {position.symbol.upper() for position in positions}
+        persisted_theses = (
+            self.operator_state_service.list_active_trade_theses(market)
+            if self.operator_state_service is not None
+            else {}
+        )
+        if self.operator_state_service is not None:
+            for trade in sorted(tuple(closed_trades), key=lambda item: item.closed_at, reverse=True):
+                if self.operator_state_service.find_closed_trade_thesis(
+                    market,
+                    trade_id=trade.trade_id,
+                    symbol=trade.symbol,
+                    opened_at=trade.opened_at,
+                    closed_at=trade.closed_at,
+                ) is not None:
+                    continue
+                symbol = trade.symbol.upper()
+                if symbol not in active_symbols:
+                    continue
+                thesis = persisted_theses.get(symbol)
+                if thesis is None:
+                    with self._lock:
+                        thesis = self._selected_theses.get((market, symbol))
+                if thesis is None:
+                    continue
+                thesis_created_at = _coerce_datetime(thesis.get("created_at"))
+                if thesis_created_at is not None and trade.closed_at < thesis_created_at:
+                    continue
+                scale_out_count = _coerce_int(thesis.get("scale_out_count", 0))
+                archived_scale_out_count = _coerce_int(thesis.get("archived_scale_out_count", 0))
+                if scale_out_count <= archived_scale_out_count:
+                    continue
+                self.operator_state_service.archive_closed_trade_thesis(
+                    market,
+                    trade.trade_id,
+                    thesis,
+                    trade_symbol=trade.symbol,
+                    opened_at=trade.opened_at,
+                    closed_at=trade.closed_at,
+                    state="scaled-out",
+                    reason=str(thesis.get("lifecycle_reason") or "partial scale-out executed"),
+                    transitioned_at=trade.closed_at,
+                )
+                updated_thesis = dict(thesis)
+                updated_thesis["archived_scale_out_count"] = archived_scale_out_count + 1
+                self.operator_state_service.upsert_active_trade_thesis(market, symbol, updated_thesis)
+                persisted_theses[symbol] = updated_thesis
+                with self._lock:
+                    self._selected_theses[(market, symbol)] = updated_thesis
+        with self._lock:
+            in_memory_stale = {
+                symbol
+                for thesis_market, symbol in self._selected_theses
+                if thesis_market == market and symbol not in active_symbols
+            }
+        stale_symbols = sorted(in_memory_stale.union(symbol for symbol in persisted_theses if symbol not in active_symbols))
+
+        for symbol in stale_symbols:
+            thesis = persisted_theses.get(symbol)
+            if thesis is None:
+                with self._lock:
+                    thesis = self._selected_theses.get((market, symbol))
+            closed_trade = next(
+                (
+                    trade
+                    for trade in reversed(tuple(closed_trades))
+                    if trade.symbol.upper() == symbol
+                    and (
+                        self.operator_state_service is None
+                        or self.operator_state_service.find_closed_trade_thesis(
+                            market,
+                            trade_id=trade.trade_id,
+                            symbol=trade.symbol,
+                            opened_at=trade.opened_at,
+                            closed_at=trade.closed_at,
+                        ) is None
+                    )
+                ),
+                None,
+            )
+            if closed_trade is not None and thesis is not None and self.operator_state_service is not None:
+                self.operator_state_service.archive_closed_trade_thesis(
+                    market,
+                    closed_trade.trade_id,
+                    thesis,
+                    trade_symbol=closed_trade.symbol,
+                    opened_at=closed_trade.opened_at,
+                    closed_at=closed_trade.closed_at,
+                    state="closed",
+                    reason=str(thesis.get("lifecycle_reason") or "position-closed"),
+                    transitioned_at=closed_trade.closed_at,
+                )
+            if self.operator_state_service is not None:
+                self.operator_state_service.remove_active_trade_thesis(market, symbol)
+            with self._lock:
+                self._selected_theses.pop((market, symbol), None)
 
     def _set_activity_locked(self, market: Market, **changes: object) -> None:
         current = self._activities[market]
@@ -1056,6 +1458,11 @@ class StrategyScannerService:
             last_order_id=_coerce_optional_str(changes.get("last_order_id", current.last_order_id)),
             last_error=_coerce_optional_str(changes.get("last_error", current.last_error)),
             last_price=_coerce_optional_str(changes.get("last_price", current.last_price)),
+            candidate_count=_coerce_int(changes.get("candidate_count", current.candidate_count)),
+            candidate_score=_coerce_optional_str(changes.get("candidate_score", current.candidate_score)),
+            last_selected_candidate=_coerce_optional_dict(changes.get("last_selected_candidate", current.last_selected_candidate)),
+            last_selected_thesis=_coerce_optional_dict(changes.get("last_selected_thesis", current.last_selected_thesis)),
+            considered_candidates=_coerce_dict_sequence(changes.get("considered_candidates", current.considered_candidates)),
         )
 
     def _record_event_locked(
@@ -1071,6 +1478,11 @@ class StrategyScannerService:
         profile_id: str | None = None,
         price: str | None = None,
         details: tuple[str, ...] | list[str] = (),
+        candidate_count: int = 0,
+        candidate_score: str | None = None,
+        selected_candidate: dict[str, object] | None = None,
+        selected_thesis: dict[str, object] | None = None,
+        considered_candidates: tuple[dict[str, object], ...] | list[dict[str, object]] = (),
     ) -> None:
         self._events[market].appendleft(
             ScannerEvent(
@@ -1084,358 +1496,13 @@ class StrategyScannerService:
                 profile_id=profile_id,
                 price=price,
                 details=tuple(details),
+                candidate_count=candidate_count,
+                candidate_score=candidate_score,
+                selected_candidate=selected_candidate,
+                selected_thesis=selected_thesis,
+                considered_candidates=tuple(considered_candidates),
             )
         )
-
-
-@dataclass(frozen=True, slots=True)
-class _RollingSignalPlugin:
-    profile: StrategyProfile
-    profile_id: str
-    symbol: str
-    recent_prices: tuple[Decimal, ...]
-    quantity: Decimal
-    recent_bars: tuple[HistoricalBar, ...] = ()
-    allow_short: bool = False
-
-    def generate_signal(self, context: StrategyContext) -> StrategySignal | None:
-        if len(self.recent_prices) < 3 or context.latest_price is None:
-            return None
-
-        diagnostics = self._signal_diagnostics(context)
-        if diagnostics is None:
-            return None
-        position = next((item for item in context.positions if item.symbol.upper() == self.symbol.upper()), None)
-        strategy_id = self.profile.strategy_id
-
-        if strategy_id == "test_drive":
-            if position is not None and position.quantity > 0 and diagnostics.current_price <= diagnostics.previous_price:
-                return self._signal(OrderSide.SELL, diagnostics.current_price, "test drive exit on any stall or downtick")
-            if position is not None and position.quantity < 0 and diagnostics.current_price >= diagnostics.previous_price:
-                return self._signal(OrderSide.BUY, diagnostics.current_price, "test drive exit on any stall or uptick")
-            if position is not None:
-                return None
-            if self.allow_short and diagnostics.current_price < diagnostics.previous_price:
-                return self._signal(OrderSide.SELL, diagnostics.current_price, "test drive short on minimal downside pressure")
-            return self._signal(OrderSide.BUY, diagnostics.current_price, "test drive long on minimal confirmation")
-
-        if position is not None and position.quantity > 0 and diagnostics.baseline_ratio <= Decimal("-0.008"):
-            return self._signal(OrderSide.SELL, diagnostics.current_price, "existing long weakened below baseline")
-        if position is not None and position.quantity < 0 and diagnostics.baseline_ratio >= Decimal("0.008"):
-            return self._signal(OrderSide.BUY, diagnostics.current_price, "existing short weakened above baseline")
-
-        if position is not None:
-            return None
-
-        if strategy_id == "momentum":
-            if diagnostics.momentum_up:
-                return self._signal(OrderSide.BUY, diagnostics.current_price, "momentum confirmation")
-            if self.allow_short and diagnostics.momentum_down:
-                return self._signal(OrderSide.SELL, diagnostics.current_price, "downside momentum confirmation")
-
-        if strategy_id == "breakout":
-            if diagnostics.breakout_up:
-                return self._signal(OrderSide.BUY, diagnostics.current_price, "breakout above recent range")
-            if self.allow_short and diagnostics.breakout_down:
-                return self._signal(OrderSide.SELL, diagnostics.current_price, "breakdown below recent range")
-
-        if strategy_id == "mean_reversion":
-            if diagnostics.reversion_up:
-                return self._signal(OrderSide.BUY, diagnostics.current_price, "reversion from downside stretch")
-            if self.allow_short and diagnostics.reversion_down:
-                return self._signal(OrderSide.SELL, diagnostics.current_price, "reversion from upside stretch")
-
-        if strategy_id == "ml_ensemble":
-            if diagnostics.long_votes >= 2:
-                return self._signal(OrderSide.BUY, diagnostics.current_price, "ensemble confirmed long setup")
-            if self.allow_short and diagnostics.short_votes >= 2:
-                return self._signal(OrderSide.SELL, diagnostics.current_price, "ensemble confirmed short setup")
-
-        return None
-
-    def explain_no_signal(self, context: StrategyContext) -> tuple[str, ...]:
-        if len(self.recent_prices) < 3:
-            return (f"history {len(self.recent_prices)}/3 bars collected before evaluation",)
-        diagnostics = self._signal_diagnostics(context)
-        if diagnostics is None:
-            return ("price history is not usable yet",)
-
-        position = next((item for item in context.positions if item.symbol.upper() == self.symbol.upper()), None)
-        if self.profile.strategy_id == "test_drive":
-            if len(self.recent_prices) < 3:
-                return (f"history {len(self.recent_prices)}/3 bars collected before evaluation",)
-            if position is not None and position.quantity > 0:
-                return (
-                    f"test drive long exits when current<=previous; current={diagnostics.current_price:.6f}, previous={diagnostics.previous_price:.6f}",
-                )
-            if position is not None and position.quantity < 0:
-                return (
-                    f"test drive short exits when current>=previous; current={diagnostics.current_price:.6f}, previous={diagnostics.previous_price:.6f}",
-                )
-            if self.allow_short:
-                return (
-                    f"test drive enters BUY when current>=previous or SELL when current<previous; current={diagnostics.current_price:.6f}, previous={diagnostics.previous_price:.6f}",
-                )
-            return (
-                f"test drive enters BUY once 3 bars exist; current={diagnostics.current_price:.6f}, previous={diagnostics.previous_price:.6f}",
-            )
-
-        if position is not None:
-            if position.quantity > 0:
-                return (
-                    f"open long held; exit needs baseline_ratio <= -0.0080, current={diagnostics.baseline_ratio:.4f}",
-                )
-            return (
-                f"open short held; exit needs baseline_ratio >= 0.0080, current={diagnostics.baseline_ratio:.4f}",
-            )
-
-        strategy_id = self.profile.strategy_id
-        if strategy_id == "momentum":
-            details = [
-                f"delta_ratio={diagnostics.delta_ratio:.4f} vs buy>={diagnostics.momentum_up_delta_min:.4f}",
-                f"baseline_ratio={diagnostics.baseline_ratio:.4f} vs buy>={diagnostics.momentum_up_baseline_min:.4f}",
-            ]
-            if self.allow_short:
-                details.append(
-                    f"short gate delta<={diagnostics.momentum_down_delta_max:.4f}, baseline<={diagnostics.momentum_down_baseline_max:.4f}"
-                )
-            return tuple(details)
-        if strategy_id == "breakout":
-            details = [
-                f"current={diagnostics.current_price:.6f} vs breakout_above={diagnostics.breakout_above_level:.6f}",
-            ]
-            if self.allow_short:
-                details.append(
-                    f"current={diagnostics.current_price:.6f} vs breakdown_below={diagnostics.breakout_below_level:.6f}"
-                )
-            return tuple(details)
-        if strategy_id == "mean_reversion":
-            details = [
-                f"baseline_ratio={diagnostics.baseline_ratio:.4f} vs buy<={diagnostics.reversion_up_baseline_max:.4f}",
-                f"delta_ratio={diagnostics.delta_ratio:.4f} vs buy>={diagnostics.reversion_up_delta_min:.4f}",
-            ]
-            if self.allow_short:
-                details.append(
-                    f"short gate baseline>={diagnostics.reversion_down_baseline_min:.4f}, delta<={diagnostics.reversion_down_delta_max:.4f}"
-                )
-            return tuple(details)
-        if strategy_id == "ml_ensemble":
-            return (
-                f"ensemble votes long={diagnostics.long_votes}/2 short={diagnostics.short_votes}/2",
-                f"momentum={_yes_no(diagnostics.momentum_up or diagnostics.momentum_down)} breakout={_yes_no(diagnostics.breakout_up or diagnostics.breakout_down)} reversion={_yes_no(diagnostics.reversion_up or diagnostics.reversion_down)}",
-            )
-        return (
-            f"delta_ratio={diagnostics.delta_ratio:.4f}",
-            f"baseline_ratio={diagnostics.baseline_ratio:.4f}",
-        )
-
-    def planned_exit_price(self, context: StrategyContext) -> Decimal | None:
-        diagnostics = self._signal_diagnostics(context)
-        if diagnostics is None:
-            return None
-        position = next((item for item in context.positions if item.symbol.upper() == self.symbol.upper()), None)
-        if position is None:
-            return None
-
-        if self.profile.strategy_id == "test_drive":
-            return diagnostics.previous_price
-        if position.quantity > 0:
-            return diagnostics.baseline_price * Decimal("0.992")
-        if position.quantity < 0:
-            return diagnostics.baseline_price * Decimal("1.008")
-        return None
-
-    def _signal_diagnostics(self, context: StrategyContext) -> _SignalDiagnostics | None:
-        del context
-        profile_settings = _profile_settings(self.profile_id)
-        if len(self.recent_bars) >= 3:
-            current_price = self.recent_bars[-1].close_price
-            previous_price = self.recent_bars[-2].close_price
-            baseline_price = sum((bar.close_price for bar in self.recent_bars[:-1]), Decimal("0")) / Decimal(len(self.recent_bars) - 1)
-            prior_high = max(bar.high_price for bar in self.recent_bars[:-1])
-            prior_low = min(bar.low_price for bar in self.recent_bars[:-1])
-        else:
-            current_price = self.recent_prices[-1]
-            previous_price = self.recent_prices[-2]
-            baseline_price = sum(self.recent_prices[:-1], Decimal("0")) / Decimal(len(self.recent_prices) - 1)
-            prior_high = max(self.recent_prices[:-1])
-            prior_low = min(self.recent_prices[:-1])
-        if previous_price <= Decimal("0") or baseline_price <= Decimal("0"):
-            return None
-        delta_ratio = (current_price - previous_price) / previous_price
-        baseline_ratio = (current_price - baseline_price) / baseline_price
-        momentum_up_delta_min = Decimal("0.003") + profile_settings["threshold_bias"]
-        momentum_up_baseline_min = Decimal("0.004") + profile_settings["threshold_bias"]
-        momentum_down_delta_max = Decimal("-0.004") - profile_settings["threshold_bias"]
-        momentum_down_baseline_max = Decimal("-0.005") - profile_settings["threshold_bias"]
-        breakout_above_level = prior_high * (Decimal("1.002") - profile_settings["breakout_buffer"])
-        breakout_below_level = prior_low * (Decimal("0.998") + profile_settings["breakout_buffer"])
-        reversion_up_baseline_max = Decimal("-0.007") - profile_settings["threshold_bias"]
-        reversion_up_delta_min = Decimal("0.002") - profile_settings["threshold_bias"]
-        reversion_down_baseline_min = Decimal("0.007") + profile_settings["threshold_bias"]
-        reversion_down_delta_max = Decimal("-0.002") + profile_settings["threshold_bias"]
-        momentum_up = delta_ratio >= momentum_up_delta_min and baseline_ratio >= momentum_up_baseline_min
-        momentum_down = delta_ratio <= momentum_down_delta_max and baseline_ratio <= momentum_down_baseline_max
-        breakout_up = current_price >= breakout_above_level
-        breakout_down = current_price <= breakout_below_level
-        reversion_up = baseline_ratio <= reversion_up_baseline_max and delta_ratio >= reversion_up_delta_min
-        reversion_down = baseline_ratio >= reversion_down_baseline_min and delta_ratio <= reversion_down_delta_max
-        return _SignalDiagnostics(
-            current_price=current_price,
-            previous_price=previous_price,
-            baseline_price=baseline_price,
-            delta_ratio=delta_ratio,
-            baseline_ratio=baseline_ratio,
-            prior_high=prior_high,
-            prior_low=prior_low,
-            momentum_up=momentum_up,
-            momentum_down=momentum_down,
-            breakout_up=breakout_up,
-            breakout_down=breakout_down,
-            reversion_up=reversion_up,
-            reversion_down=reversion_down,
-            long_votes=sum((momentum_up, breakout_up, reversion_up)),
-            short_votes=sum((momentum_down, breakout_down, reversion_down)),
-            momentum_up_delta_min=momentum_up_delta_min,
-            momentum_up_baseline_min=momentum_up_baseline_min,
-            momentum_down_delta_max=momentum_down_delta_max,
-            momentum_down_baseline_max=momentum_down_baseline_max,
-            breakout_above_level=breakout_above_level,
-            breakout_below_level=breakout_below_level,
-            reversion_up_baseline_max=reversion_up_baseline_max,
-            reversion_up_delta_min=reversion_up_delta_min,
-            reversion_down_baseline_min=reversion_down_baseline_min,
-            reversion_down_delta_max=reversion_down_delta_max,
-        )
-
-    def _signal(self, side: OrderSide, reference_price: Decimal, rationale: str) -> StrategySignal:
-        return StrategySignal(
-            strategy_id=self.profile.strategy_id,
-            order_request=OrderRequest(
-                client_order_id=_client_order_id(self.profile.market, self.symbol, self.profile.strategy_id),
-                symbol=self.symbol,
-                side=side,
-                quantity=self.quantity,
-                order_type=OrderType.MARKET,
-                limit_price=reference_price,
-            ),
-            rationale=rationale,
-        )
-
-
-def _risk_engine(market: Market, profile_id: str) -> RiskPolicyEngine:
-    max_order_notional = _profile_settings(profile_id)["target_notional"]
-    return RiskPolicyEngine(
-        policy=RiskPolicy(
-            max_order_notional=max_order_notional,
-            max_position_notional=max_order_notional * Decimal("3"),
-            max_daily_loss=max_order_notional,
-            max_drawdown=max_order_notional * Decimal("2"),
-        )
-    )
-
-
-def _strategy_profile(market: Market, strategy_id: str, profile_id: str) -> StrategyProfile:
-    return StrategyProfile(
-        strategy_id=strategy_id,
-        name=strategy_id.replace("-", " ").title(),
-        version="scan-v2-7-aligned",
-        market=market,
-        description=f"{strategy_id} using profile {profile_id}",
-        tags=(profile_id,),
-        enabled=True,
-    )
-
-
-def _order_quantity(market: Market, profile_id: str, price: Decimal) -> Decimal:
-    if price <= Decimal("0"):
-        return Decimal("0")
-    target_notional = _profile_settings(profile_id)["target_notional"]
-    if market == Market.STOCKS:
-        return max(Decimal("1"), (target_notional / price).to_integral_value(rounding=ROUND_DOWN))
-    if market == Market.CRYPTO:
-        return max(Decimal("0.001"), (target_notional / price).quantize(Decimal("0.001"), rounding=ROUND_DOWN))
-    return {
-        "conservative": Decimal("0.5"),
-        "moderate": Decimal("0.75"),
-        "aggressive": Decimal("1.25"),
-        "hft": Decimal("0.5"),
-    }.get(profile_id, Decimal("0.5"))
-
-
-def _execution_mode_for_profile(profile_id: str) -> str:
-    del profile_id
-    return "scan-and-trade"
-
-
-def _client_order_id(market: Market, symbol: str, strategy_id: str) -> str:
-    timestamp = int(datetime.now(UTC).timestamp())
-    market_code = market.value[:2]
-    safe_symbol = "".join(character for character in symbol.lower() if character.isalnum())[:8] or "symbol"
-    strategy_code = "".join(character for character in strategy_id.lower() if character.isalnum())[:4] or "strt"
-    return f"sc-{market_code}-{safe_symbol}-{strategy_code}-{timestamp}"
-
-
-def _execution_summary(symbol: str, message: str) -> str:
-    return f"{symbol}: {message}"
-
-
-def _yes_no(value: bool) -> str:
-    return "yes" if value else "no"
-
-
-def _can_submit_for_symbol(
-    market: Market,
-    symbol: str,
-    positions: tuple[NormalizedPosition, ...],
-    order_request: OrderRequest,
-) -> bool:
-    del market, symbol, positions, order_request
-    return True
-
-
-def _in_symbol_cooldown(last_trade_at: datetime | None, profile_id: str) -> bool:
-    if last_trade_at is None:
-        return False
-    return (datetime.now(UTC) - last_trade_at).total_seconds() < _profile_settings(profile_id)["cooldown_seconds"]
-
-
-def _profile_settings(profile_id: str) -> ProfileSettings:
-    profiles: dict[str, ProfileSettings] = {
-        "conservative": {
-            "target_notional": Decimal("350"),
-            "threshold_bias": Decimal("0.0015"),
-            "breakout_buffer": Decimal("0.0006"),
-            "cooldown_seconds": 420,
-        },
-        "moderate": {
-            "target_notional": Decimal("650"),
-            "threshold_bias": Decimal("0.0000"),
-            "breakout_buffer": Decimal("0.0000"),
-            "cooldown_seconds": 300,
-        },
-        "aggressive": {
-            "target_notional": Decimal("1000"),
-            "threshold_bias": Decimal("-0.0008"),
-            "breakout_buffer": Decimal("0.0005"),
-            "cooldown_seconds": 180,
-        },
-        "hft": {
-            "target_notional": Decimal("250"),
-            "threshold_bias": Decimal("-0.0012"),
-            "breakout_buffer": Decimal("0.0008"),
-            "cooldown_seconds": 90,
-        },
-    }
-    default_profile: ProfileSettings = {
-        "target_notional": Decimal("500"),
-        "threshold_bias": Decimal("0.0000"),
-        "breakout_buffer": Decimal("0.0000"),
-        "cooldown_seconds": 300,
-    }
-    return profiles.get(profile_id, default_profile)
-
-
 def _coerce_int(value: object) -> int:
     if isinstance(value, bool):
         return int(value)
@@ -1447,11 +1514,25 @@ def _coerce_int(value: object) -> int:
 
 
 def _coerce_datetime(value: object) -> datetime | None:
-    return value if isinstance(value, datetime) else None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value:
+        return datetime.fromisoformat(value)
+    return None
 
 
 def _coerce_optional_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _coerce_optional_dict(value: object) -> dict[str, object] | None:
+    return value if isinstance(value, dict) else None
+
+
+def _coerce_dict_sequence(value: object) -> tuple[dict[str, object], ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(item for item in value if isinstance(item, dict))
 
 
 def _recommended_quote_ttl_seconds(worker: MarketWorker) -> int:

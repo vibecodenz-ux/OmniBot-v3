@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     )
     from omnibot_v3.infra.login_audit import InMemoryLoginAuditStore
     from omnibot_v3.infra.mock_broker import MockBrokerAdapter
+    from omnibot_v3.infra.replay_broker import ReplayBrokerAdapter
     from omnibot_v3.infra.postgres_runtime_store import (
         PostgresRuntimeEventStore,
         PostgresRuntimeSnapshotStore,
@@ -104,6 +105,7 @@ __all__ = [
     "LinuxValidationReport",
     "LinuxValidationStepResult",
     "MockBrokerAdapter",
+    "ReplayBrokerAdapter",
     "PostgresBackupConfig",
     "PostgresRuntimeEventStore",
     "PostgresRuntimeSnapshotStore",
@@ -307,6 +309,11 @@ def __getattr__(name: str) -> Any:
         from omnibot_v3.infra.mock_broker import MockBrokerAdapter
 
         return MockBrokerAdapter
+
+    if name == "ReplayBrokerAdapter":
+        from omnibot_v3.infra.replay_broker import ReplayBrokerAdapter
+
+        return ReplayBrokerAdapter
 
     if name == "InMemoryLoginAuditStore":
         from omnibot_v3.infra.login_audit import InMemoryLoginAuditStore

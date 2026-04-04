@@ -5,6 +5,7 @@ import type {
   SecretMetadata,
   SessionView,
   SettingsPayload,
+  TradingModule,
   UpdateApplyResponse,
   UpdateCheckResult,
   UpdateStatusPayload,
@@ -118,9 +119,9 @@ export async function sendRuntimeCommand(csrfToken: string, market: string, comm
 export async function updateModuleSelection(
   csrfToken: string,
   market: string,
-  body: { strategy_id?: string; profile_id?: string },
-) {
-  return requestJson(`/v1/trading/modules/${market}/selection`, {
+  body: { profile_id?: string },
+): Promise<TradingModule> {
+  return requestJson<TradingModule>(`/v1/trading/modules/${market}/selection`, {
     method: "PUT",
     csrfToken,
     body,

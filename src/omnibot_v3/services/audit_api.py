@@ -16,6 +16,7 @@ from omnibot_v3.domain import (
 )
 from omnibot_v3.services.login_audit import LoginAuditService
 from omnibot_v3.services.orchestrator import TradingOrchestrator
+from omnibot_v3.services.text_formatting import sentence_case, title_label
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,12 +86,7 @@ class AuditApiService:
     def _runtime_state_change(self, previous_state: str | None, new_state: str | None) -> str | None:
         if previous_state is None or new_state is None:
             return None
-        return f"{self._label(previous_state)} to {self._label(new_state)}"
+        return f"{title_label(previous_state)} to {title_label(new_state)}"
 
     def _format_reason(self, reason: str | None) -> str | None:
-        if reason is None:
-            return None
-        return reason[:1].upper() + reason[1:]
-
-    def _label(self, value: str) -> str:
-        return value.replace("_", " ").replace("-", " ").title()
+        return sentence_case(reason)

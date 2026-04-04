@@ -10,10 +10,12 @@ from omnibot_v3.domain import BrokerHealth, BrokerHealthStatus
 from omnibot_v3.domain.runtime import Market
 from omnibot_v3.services.market_catalog import (
     normalize_profile_id,
-    normalize_strategy_id,
 )
 from omnibot_v3.services.market_worker import MarketWorker
 from omnibot_v3.services.operator_state import OperatorStateService
+
+
+AUTONOMOUS_STRATEGY_MODE = "auto-rotate"
 
 
 def utc_now() -> datetime:
@@ -31,7 +33,6 @@ class ModuleOption:
 
 @dataclass(frozen=True, slots=True)
 class TradingModuleSelection:
-    strategy_id: str
     profile_id: str
     updated_at: datetime = field(default_factory=utc_now)
 
@@ -70,15 +71,12 @@ class TradingModuleService:
                 if market not in self.definitions:
                     continue
                 definition = self.definitions[market]
-                strategy_id = normalize_strategy_id(market, selection.strategy_id)
                 profile_id = normalize_profile_id(market, selection.profile_id)
                 try:
-                    _option_by_id(definition.strategies, strategy_id)
                     _option_by_id(definition.profiles, profile_id)
                 except ValueError:
                     continue
                 self.selections[market] = TradingModuleSelection(
-                    strategy_id=strategy_id,
                     profile_id=profile_id,
                     updated_at=selection.updated_at,
                 )
@@ -87,7 +85,6 @@ class TradingModuleService:
             self.selections.setdefault(
                 market,
                 TradingModuleSelection(
-                    strategy_id=definition.default_strategy_id,
                     profile_id=definition.default_profile_id,
                 ),
             )
@@ -100,7 +97,6 @@ class TradingModuleService:
             selection = self.selections[market]
             worker = self._worker_for(market)
             health = self.health_provider(market) if self.health_provider is not None else worker.health_check()
-            selected_strategy = _option_by_id(definition.strategies, selection.strategy_id)
             selected_profile = _option_by_id(definition.profiles, selection.profile_id)
             modules.append(
                 {
@@ -109,50 +105,47 @@ class TradingModuleService:
                     "descriptor": definition.descriptor,
                     "symbols": list(worker.settings.symbols),
                     "symbols_tooltip": _symbols_tooltip(worker.settings.symbols),
-                    "selected_strategy_id": selection.strategy_id,
+                    "autonomy_mode": AUTONOMOUS_STRATEGY_MODE,
                     "selected_profile_id": selection.profile_id,
-                    "strategy_summary": selected_strategy.summary,
-                    "strategy_note": selected_strategy.note,
+                    "strategy_family_summary": _strategy_family_summary(definition),
+                    "strategy_family_note": _strategy_family_note(definition),
                     "profile_summary": selected_profile.summary,
                     "profile_note": selected_profile.note,
                     "module_scope": _module_scope_label(market),
                     "module_notes": _module_notes(market),
+                    "active_guardrails": _active_guardrails(market),
                     **_module_status_payload(worker, health),
                     **(self.activity_provider(market) if self.activity_provider is not None else {}),
                     "updated_at": selection.updated_at.isoformat(),
-                    "strategies": [_option_to_payload(option) for option in definition.strategies],
+                    "strategy_families": [_option_to_payload(option) for option in definition.strategies],
                     "profiles": [_option_to_payload(option) for option in definition.profiles],
                 }
             )
         return {"generated_at": generated_at, "modules": modules}
 
     def current_selection(self, market: Market) -> tuple[str, str]:
+        definition = self._definition_for(market)
         selection = self.selections[market]
-        return selection.strategy_id, selection.profile_id
+        return definition.default_strategy_id, selection.profile_id
 
     def update_selection_payload(
         self,
         market: Market,
-        strategy_id: str | None,
         profile_id: str | None,
     ) -> dict[str, object]:
         definition = self._definition_for(market)
         current = self.selections[market]
-        next_strategy_id = normalize_strategy_id(market, strategy_id or current.strategy_id)
         next_profile_id = normalize_profile_id(market, profile_id or current.profile_id)
 
-        _option_by_id(definition.strategies, next_strategy_id)
         _option_by_id(definition.profiles, next_profile_id)
 
         self.selections[market] = TradingModuleSelection(
-            strategy_id=next_strategy_id,
             profile_id=next_profile_id,
         )
         if self.operator_state_service is not None:
             updated_selection = self.selections[market]
             self.operator_state_service.update_trading_module_selection(
                 market,
-                strategy_id=updated_selection.strategy_id,
                 profile_id=updated_selection.profile_id,
                 updated_at=updated_selection.updated_at,
             )
@@ -195,31 +188,41 @@ def _option_by_id(options: tuple[ModuleOption, ...], option_id: str) -> ModuleOp
     raise ValueError(f"Unknown module option '{option_id}'.")
 
 
+def _strategy_family_summary(definition: TradingModuleDefinition) -> str:
+    family_names = ", ".join(option.name for option in definition.strategies)
+    return f"Scanner rotates across {family_names} setups and only acts when the live thesis clears the market and portfolio brakes."
+
+
+def _strategy_family_note(definition: TradingModuleDefinition) -> str:
+    recommended = next((option.name for option in definition.strategies if option.recommended), definition.strategies[0].name)
+    return f"No market-level strategy is pinned here. The engine keeps every supported family available and uses {recommended} only as the passive fallback when a position overlay needs a neutral reference."
+
+
 def _build_default_definitions() -> dict[Market, TradingModuleDefinition]:
     return {
         Market.STOCKS: TradingModuleDefinition(
             market=Market.STOCKS,
             label="Alpaca",
-            descriptor="v2.7-aligned US equities automation.",
+            descriptor="Auto engine for the configured US stock watchlist.",
             strategies=(
                 ModuleOption(
                     option_id="momentum",
-                    name="Momentum Trend",
-                    summary="EMA and RSI-style trend following for the liquid ETF and large-cap basket.",
-                    note="This was the stock default in v2.7 and maps best to the current live scanner.",
+                    name="Trend Follow",
+                    summary="Buys strength and exits when the move stalls, the hard risk rules trigger, or the profit target is met.",
+                    note="Best for clean directional sessions. Live exits now also use a hard stop, profit target above estimated costs, and a max hold timer.",
                     recommended=True,
                 ),
                 ModuleOption(
                     option_id="breakout",
-                    name="Breakout Expansion",
-                    summary="Range expansion and continuation logic for decisive sessions.",
-                    note="Best when the open resolves cleanly and leaders are taking out recent highs.",
+                    name="Range Breakout",
+                    summary="Waits for price to escape a recent range, then manages the trade with the selected profile's exit rules.",
+                    note="Best when the market opens quietly and then expands with conviction.",
                 ),
                 ModuleOption(
                     option_id="mean_reversion",
-                    name="Mean Reversion",
-                    summary="Fade stretched price action back toward local value during quieter tape.",
-                    note="Use when the market is rotational instead of strongly trending.",
+                    name="Fade Reversal",
+                    summary="Looks for stretched price moves to snap back toward fair value, with the same hard exits layered on top.",
+                    note="Use when the market is choppy and rotating rather than trending cleanly.",
                 ),
                 ModuleOption(
                     option_id="test_drive",
@@ -231,54 +234,54 @@ def _build_default_definitions() -> dict[Market, TradingModuleDefinition]:
             profiles=(
                 ModuleOption(
                     option_id="moderate",
-                    name="Moderate",
-                    summary="Balanced cadence and risk for normal autonomous operation.",
-                    note="This was the default stock profile in v2.7 and is the best default here too.",
+                    name="Balanced Autopilot",
+                    summary="Medium position size, medium signal strictness, about 0.6% net profit target after estimated costs, 1.2% stop, 6h max hold.",
+                    note="Best default when you want the bot to trade on its own without holding stale positions all day.",
                     recommended=True,
                 ),
                 ModuleOption(
                     option_id="conservative",
-                    name="Conservative",
-                    summary="Lower risk with slower acceptance and stricter signal confirmation.",
-                    note="Useful while validating a broker setup or uncertain tape.",
+                    name="Capital Protection",
+                    summary="Smaller size with stricter entries, about 0.4% net profit target after estimated costs, 0.9% stop, 8h max hold.",
+                    note="Use this when you want fewer trades and tighter downside control.",
                 ),
                 ModuleOption(
                     option_id="aggressive",
-                    name="Aggressive",
-                    summary="Looser thresholds, larger sizing, and faster re-entry when conditions stay clean.",
-                    note="Use only when the feed and execution path are both stable.",
+                    name="Growth Focus",
+                    summary="Larger size and looser entries, about 0.9% net profit target after estimated costs, 1.8% stop, 4h max hold.",
+                    note="Takes more risk and expects cleaner trends. Use only when the market is liquid and stable.",
                 ),
                 ModuleOption(
                     option_id="hft",
-                    name="HFT",
-                    summary="Fastest cadence profile with smaller size and the loosest thresholds.",
-                    note="Still supported, but not recommended for this one-host build.",
+                    name="Fast Probe",
+                    summary="Very fast entries with small size, about 0.3% net profit target after estimated costs, 0.6% stop, 75m max hold.",
+                    note="Useful for short demo probes, but it can churn more and is not the best default for steady automation.",
                 ),
             ),
         ),
         Market.CRYPTO: TradingModuleDefinition(
             market=Market.CRYPTO,
             label="Binance Futures Demo",
-            descriptor="v2.7-aligned USD-M futures demo automation.",
+            descriptor="Auto engine for the configured Binance Futures demo pairs.",
             strategies=(
                 ModuleOption(
                     option_id="breakout",
-                    name="Breakout Expansion",
-                    summary="Default v2.7 crypto strategy for compression breaks and continuation.",
-                    note="Best fit for 24/7 crypto volatility and the current live scanner.",
+                    name="Range Breakout",
+                    summary="Waits for crypto to break out of compression, then hands the trade to the profile's hard exit rules.",
+                    note="Good default for crypto because it avoids some chop and now has explicit stop, profit, and hold limits.",
                     recommended=True,
                 ),
                 ModuleOption(
                     option_id="momentum",
-                    name="Momentum Trend",
-                    summary="Follow directional continuation when the tape remains one-sided.",
-                    note="Better for persistent BTC and ETH trend phases than choppy rotation.",
+                    name="Trend Follow",
+                    summary="Joins one-sided crypto moves early and exits with both signal logic and hard risk rules.",
+                    note="Works best when majors are trending instead of whipping around.",
                 ),
                 ModuleOption(
                     option_id="ml_ensemble",
-                    name="Ensemble Consensus",
-                    summary="Requires agreement across multiple signal families before acting.",
-                    note="The strongest v2.7-only addition because it is materially different from simple one-rule entries.",
+                    name="Multi-Signal Consensus",
+                    summary="Requires several signal families to agree before opening a trade, then uses the same hard exits as the other live modes.",
+                    note="Usually trades less often, but is easier to trust because it waits for agreement.",
                 ),
                 ModuleOption(
                     option_id="test_drive",
@@ -290,54 +293,54 @@ def _build_default_definitions() -> dict[Market, TradingModuleDefinition]:
             profiles=(
                 ModuleOption(
                     option_id="moderate",
-                    name="Moderate",
-                    summary="Balanced cadence and risk for normal automated crypto operation.",
-                    note="This matches the v2.7 crypto default.",
+                    name="Balanced Autopilot",
+                    summary="Medium size, about 0.6% net profit target after estimated crypto costs, 1.2% stop, 6h max hold.",
+                    note="Best default for live crypto demo trading because it balances trade frequency with faster exits.",
                     recommended=True,
                 ),
                 ModuleOption(
                     option_id="conservative",
-                    name="Conservative",
-                    summary="Lower size with stricter confirmation during unstable exchange conditions.",
-                    note="Good fallback when spread quality or responsiveness degrades.",
+                    name="Capital Protection",
+                    summary="Smaller size, about 0.4% net profit target after estimated crypto costs, 0.9% stop, 8h max hold.",
+                    note="Best when exchange conditions feel messy and you want to slow the bot down.",
                 ),
                 ModuleOption(
                     option_id="aggressive",
-                    name="Aggressive",
-                    summary="Higher participation with larger notional and faster re-entry.",
-                    note="Closest to the old beta-seeking behavior, but aligned to v2.7 names.",
+                    name="Growth Focus",
+                    summary="Larger size, about 0.9% net profit target after estimated crypto costs, 1.8% stop, 4h max hold.",
+                    note="More willing to chase momentum and recycle quickly, but it will take larger swings.",
                 ),
                 ModuleOption(
                     option_id="hft",
-                    name="HFT",
-                    summary="Fastest cadence profile with smaller sizing and loose confirmation.",
-                    note="Supported for continuity with v2.7, but still not recommended by default.",
+                    name="Fast Probe",
+                    summary="Small size, very fast entries, about 0.3% net profit target after estimated crypto costs, 0.6% stop, 75m max hold.",
+                    note="Useful for proving the full order loop quickly, but it is more sensitive to noise and fees.",
                 ),
             ),
         ),
         Market.FOREX: TradingModuleDefinition(
             market=Market.FOREX,
             label="IG Forex AU",
-            descriptor="v2.7-aligned forex demo execution.",
+            descriptor="Auto engine for the configured forex majors on your demo account.",
             strategies=(
                 ModuleOption(
                     option_id="mean_reversion",
-                    name="Mean Reversion",
-                    summary="Default v2.7 forex strategy for liquid majors and contained session ranges.",
-                    note="Best starting point for the current IG demo basket.",
+                    name="Fade Reversal",
+                    summary="Looks for majors to snap back after a stretch and then manages the trade with hard exits.",
+                    note="Best forex starting point when the majors are ranging instead of breaking out.",
                     recommended=True,
                 ),
                 ModuleOption(
                     option_id="momentum",
-                    name="Momentum Trend",
-                    summary="Directional continuation for stronger macro-driven sessions.",
-                    note="Switch to this when majors are cleanly trending instead of reverting.",
+                    name="Trend Follow",
+                    summary="Follows stronger directional FX moves and exits with a stop, profit target, or hold timer.",
+                    note="Use this when the majors are clearly trending after macro news or session breaks.",
                 ),
                 ModuleOption(
                     option_id="breakout",
-                    name="Breakout Expansion",
-                    summary="Range escape logic for London or New York driven volatility expansion.",
-                    note="Use when the majors are resolving from compression.",
+                    name="Range Breakout",
+                    summary="Waits for London or New York range expansion, then manages the position with the selected profile's exits.",
+                    note="Best when the pairs have been quiet and are starting to expand.",
                 ),
                 ModuleOption(
                     option_id="test_drive",
@@ -349,28 +352,28 @@ def _build_default_definitions() -> dict[Market, TradingModuleDefinition]:
             profiles=(
                 ModuleOption(
                     option_id="moderate",
-                    name="Moderate",
-                    summary="Balanced cadence and risk for normal FX automation.",
-                    note="This matches the v2.7 forex default.",
+                    name="Balanced Autopilot",
+                    summary="Medium size, about 0.6% net profit target after estimated costs, 1.2% stop, 6h max hold.",
+                    note="Best default for FX automation once the market is open and liquid.",
                     recommended=True,
                 ),
                 ModuleOption(
                     option_id="conservative",
-                    name="Conservative",
-                    summary="Lower size and stricter confirmation for quieter or headline-heavy sessions.",
-                    note="Useful around macro releases or while validating IG setup.",
+                    name="Capital Protection",
+                    summary="Smaller size, about 0.4% net profit target after estimated costs, 0.9% stop, 8h max hold.",
+                    note="Best when headlines are noisy or you want the bot to trade less often.",
                 ),
                 ModuleOption(
                     option_id="aggressive",
-                    name="Aggressive",
-                    summary="Larger notional and faster re-entry when majors are directional and liquid.",
-                    note="Closest live-demo equivalent to the old carry-bias posture.",
+                    name="Growth Focus",
+                    summary="Larger size, about 0.9% net profit target after estimated costs, 1.8% stop, 4h max hold.",
+                    note="Use only when spreads are healthy and the majors are moving cleanly.",
                 ),
                 ModuleOption(
                     option_id="hft",
-                    name="HFT",
-                    summary="Fastest cadence profile with small sizing and looser confirmation.",
-                    note="Supported for v2.7 parity, but not recommended as the default profile.",
+                    name="Fast Probe",
+                    summary="Small size, fast entries, about 0.3% net profit target after estimated costs, 0.6% stop, 75m max hold.",
+                    note="Useful for quick demo validation, but not the best default for steadier live-style behavior.",
                 ),
             ),
         ),
@@ -385,27 +388,42 @@ def _symbols_tooltip(symbols: tuple[str, ...]) -> str:
 
 def _module_scope_label(market: Market) -> str:
     if market == Market.STOCKS:
-        return "US stock module"
+        return "Configured US stock watchlist"
     if market == Market.CRYPTO:
-        return "USD-M futures demo module"
-    return "Forex demo module"
+        return "Configured Binance Futures demo pairs"
+    return "Configured forex majors"
 
 
 def _module_notes(market: Market) -> list[str]:
     if market == Market.STOCKS:
         return [
-            "This module trades stocks only.",
-            "It works from the configured symbol basket, not the full exchange universe.",
+            "The engine only scans the symbols configured for this market, not the full exchange.",
+            "Advanced overrides tune the legacy entry model and risk posture without changing broker connectivity or safety rails.",
         ]
     if market == Market.CRYPTO:
         return [
-            "This module trades crypto only.",
-            "Supported instruments depend on the configured Binance Futures demo environment.",
+            "The engine only scans the configured Binance Futures demo pairs available to this workspace.",
+            "Advanced overrides tune entry and risk behavior while the shared crypto execution rails stay in place.",
         ]
     return [
-        "This module trades forex only.",
-        "It is limited to the configured FX pair basket, not the full IG product catalogue.",
+        "The engine only scans the configured forex majors for this market, not every product exposed by IG.",
+        "Advanced overrides tune the legacy setup selection while the same FX guardrails stay active underneath.",
     ]
+
+
+def _active_guardrails(market: Market) -> list[str]:
+    guardrails = [
+        "Every live position keeps a hard stop active.",
+        "Profit capture waits until estimated trading costs are covered.",
+        "A max-hold timer forces stale positions out of the book.",
+    ]
+    if market == Market.STOCKS:
+        guardrails.append("Order flow stays limited to the configured stock watchlist.")
+    elif market == Market.CRYPTO:
+        guardrails.append("Order flow stays limited to the configured Binance Futures demo pairs.")
+    else:
+        guardrails.append("Order flow stays limited to the configured forex majors for this market.")
+    return guardrails
 
 
 def _module_status_payload(worker: MarketWorker, health: BrokerHealth) -> dict[str, object]:

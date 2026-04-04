@@ -1,14 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, BarChart3, Briefcase, RefreshCw, ShieldCheck } from "lucide-react";
-import { backfillJournalHistory, clearJournalHistory, closeJournalPosition, getDashboardBundle, getSession, login, logout, sendRuntimeCommand, updateModuleSelection } from "./lib/api";
+import { backfillJournalHistory, clearJournalHistory, closeJournalPosition, getDashboardBundle, getSession, login, logout, sendRuntimeCommand } from "./lib/api";
 import { formatMoney, formatTimestamp, titleCase } from "./lib/format";
 import type {
   DashboardBundle,
+  StrategyActivityAnalytics,
+  StrategyCandidateView,
   StrategyActivityCandle,
   StrategyActivityMarketSummary,
+  StrategyActivityNamedCount,
   StrategyActivityPositionOverlay,
   StrategyActivityRankedSymbol,
+  TradingModule,
   ViewId,
 } from "./lib/types";
 import { CandlestickChart } from "./components/CandlestickChart";
@@ -33,7 +37,7 @@ const FALLBACK_BUILD_INFO = {
 
 const VIEW_COPY: Record<ViewId, { title: string; description: string }> = {
   dashboard: { title: "Dashboard", description: "Account summary and activity." },
-  bots: { title: "Bots", description: "Manage each market." },
+  bots: { title: "Bots", description: "Choose how each market trades and how tightly risk is managed." },
   analytics: { title: "Analytics", description: "Performance, charts, and activity." },
   accounts: { title: "Journal", description: "Live positions and trade history." },
   settings: { title: "Settings", description: "Preferences, security, and updates." },
@@ -43,6 +47,11 @@ interface JournalTableRow {
   id: string;
   market: string;
   symbol: string;
+  strategyId?: string | null;
+  thesisId?: string | null;
+  thesisState?: string | null;
+  thesisReason?: string | null;
+  thesisTransitionAt?: string | null;
   status: "open" | "closed";
   side: string;
   quantity: string;
@@ -64,6 +73,24 @@ function pnlToneClass(value: string | number | null | undefined): string {
 function asArray<T>(value: T[] | undefined | null): T[] {
   return Array.isArray(value) ? value : [];
 }
+
+function isSameCandidate(
+  left: { strategy_id?: string; setup_family?: string | null; side?: string | null; symbol?: string | null },
+  right: { strategy_id?: string; setup_family?: string | null; side?: string | null; symbol?: string | null },
+): boolean {
+  return left.strategy_id === right.strategy_id
+    && (left.setup_family || null) === (right.setup_family || null)
+    && (left.side || null) === (right.side || null)
+    && (left.symbol || null) === (right.symbol || null);
+}
+
+type FeedItem = {
+  title: string;
+  subtitle: string;
+  meta: string[];
+  details?: string[];
+  tone?: "success" | "warning" | "danger" | "neutral";
+};
 
 function toneFromLevel(level?: string): "success" | "warning" | "danger" | "neutral" {
   const normalized = String(level || "").toLowerCase();
@@ -141,14 +168,19 @@ function HealthList({ bundle }: { bundle: DashboardBundle }) {
   );
 }
 
-function FeedList({ items }: { items: Array<{ title: string; subtitle: string; meta: string[] }> }) {
+function FeedList({ items }: { items: FeedItem[] }) {
   return (
     <div className="stack-list">
       {items.length === 0 ? <p className="empty-copy">No events recorded yet.</p> : null}
       {items.map((item, index) => (
-        <article key={`${item.title}-${index}`} className="feed-card">
+        <article key={`${item.title}-${index}`} className={`feed-card feed-card-${item.tone || "neutral"}`}>
           <strong>{item.title}</strong>
           {item.subtitle ? <p>{item.subtitle}</p> : null}
+          {asArray(item.details).length ? (
+            <div className="feed-detail-list">
+              {asArray(item.details).map((detail) => <span key={detail}>{detail}</span>)}
+            </div>
+          ) : null}
           <div className="chip-row">
             {item.meta.map((meta) => <span key={meta}>{meta}</span>)}
           </div>
@@ -279,6 +311,10 @@ function MarketScannerCard({ summary, themeMode }: { summary: StrategyActivityMa
 
   const selectedCandles = selectedSymbol ? asArray<StrategyActivityCandle>(candlesBySymbol[selectedSymbol]) : [];
   const selectedOverlays = selectedSymbol ? asArray<StrategyActivityPositionOverlay>(positionOverlaysBySymbol[selectedSymbol]) : [];
+  const selectedCandidate = summary.selected_candidate;
+  const selectedThesis = summary.selected_thesis;
+  const candidateEvidence = asArray(selectedCandidate?.evidence).slice(0, 3);
+  const consideredCandidates = asArray(summary.considered_candidates).slice(0, 3);
 
   return (
     <article className="series-card">
@@ -287,6 +323,50 @@ function MarketScannerCard({ summary, themeMode }: { summary: StrategyActivityMa
         <StatusBadge label={summary.warmup_status || "unknown"} tone={toneFromLevel(summary.warmup_status || "warning")} />
       </div>
       <p>{summary.last_decision || "No recent activity yet."}</p>
+      {selectedCandidate ? (
+        <div className="series-thesis-card">
+          {selectedThesis?.thesis_id ? <small>{selectedThesis.thesis_id}</small> : null}
+          <div className="module-thesis-chip-row">
+            <span>{titleCase(selectedCandidate.strategy_id)}</span>
+            {selectedCandidate.setup_family ? <span>{titleCase(selectedCandidate.setup_family)}</span> : null}
+            {selectedCandidate.regime ? <span>{titleCase(selectedCandidate.regime)}</span> : null}
+            {selectedCandidate.side ? <span>{titleCase(selectedCandidate.side)}</span> : null}
+            {summary.candidate_count ? <span>{summary.candidate_count} candidate{summary.candidate_count === 1 ? "" : "s"}</span> : null}
+            {summary.candidate_score ? <span>Score {summary.candidate_score}</span> : null}
+            {selectedThesis?.lifecycle_state ? <span>{titleCase(selectedThesis.lifecycle_state)}</span> : null}
+            {selectedThesis?.scale_out_count && selectedThesis?.scale_out_stage_total ? (
+              <span>Scale {selectedThesis.scale_out_count}/{selectedThesis.scale_out_stage_total}</span>
+            ) : null}
+          </div>
+          {selectedCandidate.summary ? <p>{selectedCandidate.summary}</p> : null}
+          {selectedThesis?.lifecycle_reason ? <small>{selectedThesis.lifecycle_reason}</small> : null}
+          {selectedThesis?.remaining_quantity || selectedThesis?.next_scale_out_trigger_price ? (
+            <div className="module-decision-details">
+              {selectedThesis.remaining_quantity ? <small>Remaining {selectedThesis.remaining_quantity}</small> : null}
+              {selectedThesis.next_scale_out_trigger_price ? <small>Next scale trigger {selectedThesis.next_scale_out_trigger_price}</small> : null}
+            </div>
+          ) : null}
+          {candidateEvidence.length ? (
+            <div className="module-decision-details">
+              {candidateEvidence.map((detail) => <small key={detail}>{detail}</small>)}
+            </div>
+          ) : null}
+          {consideredCandidates.length > 1 ? (
+            <div className="module-alternative-list">
+              <small>Alternatives</small>
+              <div className="module-thesis-chip-row">
+                {consideredCandidates
+                  .filter((candidate) => !isSameCandidate(candidate, selectedCandidate))
+                  .map((candidate) => (
+                    <span key={`${candidate.strategy_id}-${candidate.score || "na"}`}>
+                      {titleCase(candidate.strategy_id)}{candidate.score ? ` (${candidate.score})` : ""}
+                    </span>
+                  ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <div className="series-toolbar">
         <label className="series-select-label">
           <span>Symbol</span>
@@ -330,9 +410,12 @@ function ScannerInsights({ bundle, themeMode }: { bundle: DashboardBundle; theme
   const summaries = asArray(bundle.strategy_activity.market_summaries);
 
   return (
-    <div className="series-grid">
-      {summaries.map((summary) => <MarketScannerCard key={summary.market} summary={summary} themeMode={themeMode} />)}
-    </div>
+    <>
+      <ScannerAnalyticsOverview analytics={bundle.strategy_activity.analytics} />
+      <div className="series-grid">
+        {summaries.map((summary) => <MarketScannerCard key={summary.market} summary={summary} themeMode={themeMode} />)}
+      </div>
+    </>
   );
 }
 
@@ -349,7 +432,108 @@ function KeyValueGrid({ entries }: { entries: Array<[string, unknown]> }) {
   );
 }
 
-function normalizeFeedItems(items: unknown[] | undefined): Array<{ title: string; subtitle: string; meta: string[] }> {
+function NamedCountChips({ title, items }: { title: string; items: StrategyActivityNamedCount[] }) {
+  if (!items.length) {
+    return null;
+  }
+
+  return (
+    <article className="support-card">
+      <span>{title}</span>
+      <div className="module-thesis-chip-row">
+        {items.map((item) => (
+          <span key={`${title}-${item.name}`}>
+            {titleCase(item.name.replaceAll("-", " "))} ({item.count})
+          </span>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function ScannerAnalyticsOverview({ analytics }: { analytics?: StrategyActivityAnalytics }) {
+  if (!analytics) {
+    return null;
+  }
+
+  const eventCounts = Object.entries(analytics.event_counts || {}).sort((left, right) => right[1] - left[1]).slice(0, 5);
+  const driftFlags = asArray(analytics.drift_flags);
+  const marketRollups = asArray(analytics.market_rollups).slice(0, 3);
+
+  return (
+    <>
+      <KeyValueGrid
+        entries={[
+          ["Recent Events", analytics.recent_event_count ?? 0],
+          ["Signals Seen", analytics.signal_count ?? 0],
+          ["Orders Submitted", analytics.order_count ?? 0],
+          ["Brakes Triggered", analytics.brake_count ?? 0],
+          ["Ready Markets", analytics.ready_market_count ?? 0],
+          ["Active Scanners", analytics.active_scanner_count ?? 0],
+        ]}
+      />
+      <div className="series-grid">
+        <NamedCountChips title="Strategy Mix" items={asArray(analytics.strategy_mix)} />
+        <NamedCountChips title="Regime Mix" items={asArray(analytics.regime_mix)} />
+        <NamedCountChips title="Lifecycle Mix" items={asArray(analytics.lifecycle_mix)} />
+        <NamedCountChips title="Brake Reasons" items={asArray(analytics.brake_reasons)} />
+        {driftFlags.length ? (
+          <article className="support-card">
+            <span>Drift Flags</span>
+            <div className="module-decision-details">
+              {driftFlags.map((flag) => (
+                <small key={`${flag.market}-${flag.state}`}>
+                  {titleCase(flag.market)}: {titleCase(flag.state.replaceAll("-", " "))} - {flag.reason}
+                </small>
+              ))}
+            </div>
+          </article>
+        ) : null}
+        {eventCounts.length ? (
+          <article className="support-card">
+            <span>Event Types</span>
+            <div className="module-thesis-chip-row">
+              {eventCounts.map(([name, count]) => (
+                <span key={name}>{titleCase(name.replaceAll("-", " "))} ({count})</span>
+              ))}
+            </div>
+          </article>
+        ) : null}
+      </div>
+      {marketRollups.length ? (
+        <div className="series-grid">
+          {marketRollups.map((rollup) => (
+            <article key={rollup.market} className="support-card">
+              <div className="stack-card-top">
+                <strong>{rollup.label || titleCase(rollup.market)}</strong>
+                <StatusBadge label={rollup.warmup_status || "unknown"} tone={toneFromLevel(rollup.warmup_status || "warning")} />
+              </div>
+              <p>{rollup.last_decision || "No recent decision available."}</p>
+              <div className="module-thesis-chip-row">
+                {rollup.execution_mode ? <span>{titleCase(rollup.execution_mode)}</span> : null}
+                {rollup.top_symbol ? <span>{rollup.top_symbol}</span> : null}
+                {rollup.top_strategy ? <span>{titleCase(rollup.top_strategy)}</span> : null}
+                {rollup.top_regime ? <span>{titleCase(rollup.top_regime)}</span> : null}
+                {rollup.drift_state ? <span>{titleCase(rollup.drift_state)}</span> : null}
+                {rollup.lifecycle_state ? <span>{titleCase(rollup.lifecycle_state)}</span> : null}
+              </div>
+              {rollup.drift_reason ? <small>{rollup.drift_reason}</small> : null}
+              <div className="module-decision-details">
+                <small>Signals {rollup.signals_seen ?? 0}</small>
+                <small>Orders {rollup.orders_submitted ?? 0}</small>
+                <small>Recent brakes {rollup.recent_brake_count ?? 0}</small>
+                <small>Execution blocks {rollup.recent_execution_block_count ?? 0}</small>
+                <small>Risk rejections {rollup.recent_risk_rejection_count ?? 0}</small>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function normalizeFeedItems(items: unknown[] | undefined): FeedItem[] {
   return asArray(items).map((item, index) => {
     const event = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
     const title = typeof event.title === "string" ? event.title : null;
@@ -362,12 +546,25 @@ function normalizeFeedItems(items: unknown[] | undefined): Array<{ title: string
     const market = typeof event.market === "string" ? event.market : null;
     const message = typeof event.message === "string" ? event.message : null;
     const eventType = typeof event.event_type === "string" ? event.event_type : null;
+    const symbol = typeof event.symbol === "string" ? event.symbol : null;
+    const strategyId = typeof event.strategy_id === "string" ? event.strategy_id : null;
+    const profileId = typeof event.profile_id === "string" ? event.profile_id : null;
+    const price = typeof event.price === "string" ? event.price : null;
+    const level = typeof event.level === "string" ? event.level : null;
+    const details = Array.isArray(event.details) ? event.details.map((value) => String(value)).filter(Boolean) : [];
+    const selectedCandidate = event.selected_candidate && typeof event.selected_candidate === "object"
+      ? event.selected_candidate as StrategyCandidateView
+      : null;
+    const candidateCount = typeof event.candidate_count === "number" ? event.candidate_count : null;
+    const candidateScore = typeof event.candidate_score === "string" ? event.candidate_score : null;
 
     if (title && subtitle) {
       return {
         title,
         subtitle,
         meta,
+        details,
+        tone: toneFromLevel(level || "neutral"),
       };
     }
 
@@ -376,17 +573,34 @@ function normalizeFeedItems(items: unknown[] | undefined): Array<{ title: string
         title: `${actorId || "User"} ${titleCase(outcome || "event")}`,
         subtitle: `${titleCase(mechanism || "session")} sign-in activity`,
         meta: [formatTimestamp(occurredAt)].filter((value) => value !== "-"),
+        tone: toneFromLevel(level || "neutral"),
       };
     }
 
     if (market || message || eventType) {
+      const strategyMeta = [
+        market ? `Market: ${titleCase(market)}` : null,
+        symbol ? `Symbol: ${symbol}` : null,
+        strategyId ? `Strategy: ${strategyId}` : null,
+        profileId ? `Profile: ${profileId}` : null,
+        selectedCandidate?.setup_family ? `Setup: ${titleCase(selectedCandidate.setup_family)}` : null,
+        selectedCandidate?.side ? `Side: ${titleCase(selectedCandidate.side)}` : null,
+        candidateCount ? `Candidates: ${candidateCount}` : null,
+        candidateScore ? `Score: ${candidateScore}` : null,
+        price ? `Price: ${price}` : null,
+        formatTimestamp(occurredAt) !== "-" ? formatTimestamp(occurredAt) : null,
+      ].filter((value): value is string => Boolean(value));
       return {
         title: titleCase(eventType || market || `event ${index + 1}`),
-        subtitle: String(message || market || "Activity update"),
-        meta: Object.entries(event)
-          .filter(([key, value]) => !["event_type", "message"].includes(key) && value !== null && value !== undefined && value !== "")
-          .slice(0, 3)
-          .map(([key, value]) => `${titleCase(key)}: ${String(value)}`),
+        subtitle: selectedCandidate?.summary || String(message || market || "Activity update"),
+        meta: strategyMeta.length
+          ? strategyMeta
+          : Object.entries(event)
+              .filter(([key, value]) => !["event_type", "message", "details", "level"].includes(key) && value !== null && value !== undefined && value !== "")
+              .slice(0, 3)
+              .map(([key, value]) => `${titleCase(key)}: ${String(value)}`),
+        details,
+        tone: toneFromLevel(level || eventType || "neutral"),
       };
     }
 
@@ -394,6 +608,8 @@ function normalizeFeedItems(items: unknown[] | undefined): Array<{ title: string
       title: `Event ${index + 1}`,
       subtitle: "No formatted event copy available.",
       meta: [],
+      details,
+      tone: toneFromLevel(level || "neutral"),
     };
   });
 }
@@ -435,6 +651,25 @@ function applyOptimisticMarketCommand(
   };
 }
 
+function mergeUpdatedModule(
+  bundle: DashboardBundle | undefined,
+  updatedModule: TradingModule,
+): DashboardBundle | undefined {
+  if (!bundle) {
+    return bundle;
+  }
+
+  return {
+    ...bundle,
+    modules: {
+      ...bundle.modules,
+      modules: asArray(bundle.modules.modules).map((module) => (
+        module.market === updatedModule.market ? { ...module, ...updatedModule } : module
+      )),
+    },
+  };
+}
+
 function DashboardContent({
   view,
   bundle,
@@ -459,6 +694,18 @@ function DashboardContent({
     () => new Map(asArray(bundle.modules.modules).map((module) => [module.market, module])),
     [bundle.modules.modules],
   );
+  const strategyEventsByMarket = useMemo(() => {
+    const grouped = new Map<string, Array<typeof bundle.strategy_activity.events[number]>>();
+    for (const event of asArray(bundle.strategy_activity.events)) {
+      if (!event?.market) {
+        continue;
+      }
+      const current = grouped.get(event.market) || [];
+      current.push(event);
+      grouped.set(event.market, current);
+    }
+    return grouped;
+  }, [bundle.strategy_activity.events]);
 
   const commandMutation = useMutation({
     mutationFn: ({ market, command }: { market: string; command: "start-market" | "stop-market" }) => sendRuntimeCommand(csrfToken, market, command),
@@ -481,12 +728,6 @@ function DashboardContent({
       setPendingCommands((current) => ({ ...current, [variables.market]: undefined }));
       setCommandFeedback(`${titleCase(variables.market)} ${variables.command === "start-market" ? "start" : "stop"} failed: ${error.message}`);
     },
-  });
-
-  const selectionMutation = useMutation({
-    mutationFn: ({ market, field, value }: { market: string; field: "strategy_id" | "profile_id"; value: string }) =>
-      updateModuleSelection(csrfToken, market, { [field]: value }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["dashboard-bundle"] }),
   });
 
   const [closingRowId, setClosingRowId] = useState<string | null>(null);
@@ -578,9 +819,9 @@ function DashboardContent({
             key={market.market}
             market={market}
             module={modulesByMarket.get(market.market)}
+            recentEvents={strategyEventsByMarket.get(market.market)}
             pendingCommand={pendingCommands[market.market]}
             onCommand={(target, command) => commandMutation.mutate({ market: target, command })}
-            onSelectionChange={(target, field, value) => selectionMutation.mutate({ market: target, field, value })}
           />
         ))}
       </div>
@@ -698,16 +939,20 @@ function DashboardContent({
       {commandFeedback ? (
         <div className="command-toast" role="status" aria-live="polite">{commandFeedback}</div>
       ) : null}
-      <Panel eyebrow="Markets" title="Manage markets">
+      <Panel
+        eyebrow="Bots"
+        title="Run each market with the auto engine"
+        note={<p>The bot should scan for opportunities, apply whichever internal setup fits the symbol and regime, and manage several different theses at the same time. This view now focuses on runtime state, guardrails, and recent decisions instead of fixed strategy labels.</p>}
+      >
         <div className="module-list module-list-bots">
           {asArray(bundle.runtime.markets).map((market) => (
             <MarketModuleCard
               key={market.market}
               market={market}
               module={modulesByMarket.get(market.market)}
+              recentEvents={strategyEventsByMarket.get(market.market)}
               pendingCommand={pendingCommands[market.market]}
               onCommand={(target, command) => commandMutation.mutate({ market: target, command })}
-              onSelectionChange={(target, field, value) => selectionMutation.mutate({ market: target, field, value })}
             />
           ))}
         </div>
@@ -719,6 +964,11 @@ function DashboardContent({
       id: `${position.market}-${position.symbol}`,
       market: position.market,
       symbol: position.symbol,
+      strategyId: position.strategy_id,
+      thesisId: position.thesis_id,
+      thesisState: position.thesis_state,
+      thesisReason: position.thesis_reason,
+      thesisTransitionAt: position.thesis_transition_at,
       status: "open" as const,
       side: titleCase(position.side || "-"),
       quantity: String(position.quantity ?? "-"),
@@ -734,6 +984,11 @@ function DashboardContent({
       id: trade.trade_id || `${trade.market}-${trade.symbol}-${index}`,
       market: trade.market,
       symbol: trade.symbol,
+      strategyId: trade.strategy_id,
+      thesisId: trade.thesis_id,
+      thesisState: trade.thesis_state,
+      thesisReason: trade.thesis_reason,
+      thesisTransitionAt: trade.thesis_transition_at,
       status: "closed" as const,
       side: titleCase(trade.side || "-"),
       quantity: String(trade.quantity ?? "-"),
@@ -775,7 +1030,12 @@ function DashboardContent({
                     <tr key={row.id} className="journal-row-open">
                       <td><StatusBadge label={row.status} tone="success" /></td>
                       <td>{titleCase(row.market)}</td>
-                      <td>{row.symbol}</td>
+                      <td>
+                        <div>{row.symbol}</div>
+                        {row.strategyId ? <small>{titleCase(row.strategyId)}</small> : null}
+                        {row.thesisState ? <small>{titleCase(row.thesisState)}</small> : null}
+                        {row.thesisReason ? <small>{row.thesisReason}</small> : null}
+                      </td>
                       <td>{row.side}</td>
                       <td>{row.quantity}</td>
                       <td>{formatMoney(row.entryPrice)}</td>
@@ -849,7 +1109,12 @@ function DashboardContent({
                   <tr key={row.id} className="journal-row-closed">
                     <td><StatusBadge label={row.status} tone="neutral" /></td>
                     <td>{titleCase(row.market)}</td>
-                    <td>{row.symbol}</td>
+                      <td>
+                        <div>{row.symbol}</div>
+                        {row.strategyId ? <small>{titleCase(row.strategyId)}</small> : null}
+                        {row.thesisState ? <small>{titleCase(row.thesisState)}</small> : null}
+                        {row.thesisReason ? <small>{row.thesisReason}</small> : null}
+                      </td>
                     <td>{row.side}</td>
                     <td>{row.quantity}</td>
                     <td>{formatMoney(row.entryPrice)}</td>

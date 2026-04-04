@@ -9,6 +9,14 @@ if TYPE_CHECKING:
     from omnibot_v3.services.audit_api import AuditApiService
     from omnibot_v3.services.broker_adapter import BrokerAdapter, BrokerAdapterContractHarness
     from omnibot_v3.services.data_catalog import DataCatalog
+    from omnibot_v3.services.decision_engine import (
+        ExecutionPlanner,
+        ExplanationBuilder,
+        ExitPlanner,
+        LayeredStrategyPlugin,
+        RegimeClassifier,
+        SetupPlanner,
+    )
     from omnibot_v3.services.linux_preflight import LinuxPreflightValidator
     from omnibot_v3.services.login_audit import LoginAuditService, LoginAuditStore
     from omnibot_v3.services.market_integrations import (
@@ -26,6 +34,11 @@ if TYPE_CHECKING:
     from omnibot_v3.services.runtime_api import RuntimeApiService
     from omnibot_v3.services.runtime_health import RuntimeHealthEvaluator
     from omnibot_v3.services.runtime_probe import RuntimeProbeService
+    from omnibot_v3.services.scanner_replay_validation import (
+        ReplayValidationResult,
+        ReplayValidationStep,
+        ScannerReplayValidationService,
+    )
     from omnibot_v3.services.runtime_store import RuntimeEventStore, RuntimeSnapshotStore
     from omnibot_v3.services.secret_api import SecretApiService, SecretNotFoundError, SecretRegistry
     from omnibot_v3.services.secrets import (
@@ -52,7 +65,11 @@ __all__ = [
     "BrokerAdapterContractHarness",
     "CryptoWorker",
     "DataCatalog",
+    "ExecutionPlanner",
+    "ExplanationBuilder",
+    "ExitPlanner",
     "ForexWorker",
+    "LayeredStrategyPlugin",
     "LinuxPreflightValidator",
     "LoginAuditService",
     "LoginAuditStore",
@@ -60,6 +77,9 @@ __all__ = [
     "RiskPolicyEngine",
     "ReleaseEvidenceService",
     "ReleaseReadinessService",
+    "RegimeClassifier",
+    "ReplayValidationResult",
+    "ReplayValidationStep",
     "RuntimeApiService",
     "SecretAccessError",
     "SecretPolicyService",
@@ -72,6 +92,7 @@ __all__ = [
     "RuntimeHealthEvaluator",
     "RuntimeProbeService",
     "RuntimeSnapshotStore",
+    "ScannerReplayValidationService",
     "SecretApiService",
     "AuthenticationError",
     "CsrfValidationError",
@@ -80,6 +101,7 @@ __all__ = [
     "SessionPolicy",
     "SecretRegistry",
     "SessionStore",
+    "SetupPlanner",
     "StocksWorker",
     "StrategyRuntime",
     "TradingOrchestrator",
@@ -114,6 +136,33 @@ def __getattr__(name: str) -> Any:
         from omnibot_v3.services.data_catalog import DataCatalog
 
         return DataCatalog
+
+    if name in {
+        "ExecutionPlanner",
+        "ExplanationBuilder",
+        "ExitPlanner",
+        "LayeredStrategyPlugin",
+        "RegimeClassifier",
+        "SetupPlanner",
+    }:
+        from omnibot_v3.services.decision_engine import (
+            ExecutionPlanner,
+            ExplanationBuilder,
+            ExitPlanner,
+            LayeredStrategyPlugin,
+            RegimeClassifier,
+            SetupPlanner,
+        )
+
+        decision_engine_exports: dict[str, Any] = {
+            "ExecutionPlanner": ExecutionPlanner,
+            "ExplanationBuilder": ExplanationBuilder,
+            "ExitPlanner": ExitPlanner,
+            "LayeredStrategyPlugin": LayeredStrategyPlugin,
+            "RegimeClassifier": RegimeClassifier,
+            "SetupPlanner": SetupPlanner,
+        }
+        return decision_engine_exports[name]
 
     if name in {"LoginAuditService", "LoginAuditStore"}:
         from omnibot_v3.services.login_audit import LoginAuditService, LoginAuditStore
@@ -191,6 +240,20 @@ def __getattr__(name: str) -> Any:
         from omnibot_v3.services.runtime_api import RuntimeApiService
 
         return RuntimeApiService
+
+    if name in {"ReplayValidationResult", "ReplayValidationStep", "ScannerReplayValidationService"}:
+        from omnibot_v3.services.scanner_replay_validation import (
+            ReplayValidationResult,
+            ReplayValidationStep,
+            ScannerReplayValidationService,
+        )
+
+        replay_exports: dict[str, Any] = {
+            "ReplayValidationResult": ReplayValidationResult,
+            "ReplayValidationStep": ReplayValidationStep,
+            "ScannerReplayValidationService": ScannerReplayValidationService,
+        }
+        return replay_exports[name]
 
     if name in {
         "SecretApiService",
